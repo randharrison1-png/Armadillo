@@ -32,12 +32,9 @@
   --text-small: 14px;
   --text-small--line-height: 20px;
 
-  /* Spacing scale: 4 / 8 / 16 / 24 px only (p-1, p-2, p-4, p-6). */
-  --spacing-*: initial;
-  --spacing-1: 4px;
-  --spacing-2: 8px;
-  --spacing-4: 16px;
-  --spacing-6: 24px;
+  /* Base unit for the Tailwind spacing multiplier (w/h/size/min/max utilities).
+     The 4/8/16/24 rule for padding, margin and gap is enforced by lint, not by the theme. */
+  --spacing: 4px;
 
   --shadow-*: initial;
 }
