@@ -1,0 +1,26 @@
+/* Armadillo design tokens. First four are spec colors; the rest are derived. */
+:root {
+  --bg: #111713;
+  --surface: #1C2520;
+  --accent: #A8D477;
+  --text: #F0F4EF;
+
+  --surface-raised: #232E28;
+  --border: #2C3830;
+  --border-input: #66776B;
+  --text-muted: #9AA89D;
+  --accent-ink: #111713;
+  --danger: #E5735C;
+  --warning: #D9B55B;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+
+  --control-h: 32px;
+  --control-h-sm: 24px;
+}
