@@ -46,6 +46,14 @@ describe('setStepStatus', () => {
     expect(ev).toMatchObject({ cycle_no: 2, from_status: 'blocked' });
   });
 
+  it('moves sessions.updated_at forward on a step change', async () => {
+    const s = await fresh();
+    const [{ t: before }] = await sql`select updated_at as t from public.sessions where id = ${s.id}`;
+    await setStepStatus({ sessionId: s.id, step: 'open_readme', status: 'in_progress' });
+    const [{ t: after }] = await sql`select updated_at as t from public.sessions where id = ${s.id}`;
+    expect(after.getTime()).toBeGreaterThan(before.getTime());
+  });
+
   it('is a no-op without an event when the status is unchanged', async () => {
     const s = await fresh();
     const row = await setStepStatus({ sessionId: s.id, step: 'check_points', status: 'not_started', note: 'ignored' });

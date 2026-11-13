@@ -40,3 +40,24 @@ $$;
 
 revoke execute on function public.create_session(text, public.os_type) from public, anon;
 grant execute on function public.create_session(text, public.os_type) to authenticated, service_role;
+
+-- A change to a step counts as activity on its session: dashboard/sidebar order by sessions.updated_at.
+-- SECURITY INVOKER (RLS applies). Only active sessions are touched: a completed session's row is
+-- immutable (and writes to its steps are already refused).
+create or replace function public.touch_session_on_step_change()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  update public.sessions set updated_at = now() where id = new.session_id and status = 'active';
+  return new;
+end;
+$$;
+
+create trigger workflow_steps_touch_session
+  after update on public.workflow_steps
+  for each row execute function public.touch_session_on_step_change();
+
+revoke execute on function public.touch_session_on_step_change() from public, anon, authenticated;
