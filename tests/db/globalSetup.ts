@@ -20,6 +20,8 @@ function sqlFiles(dir: string): string[] {
  * touch the server; wipe the public/auth/paste schemas and re-apply shim + migrations.
  */
 export default async function setup() {
+  // Local file store for any db test that touches uploads (never Supabase Storage in tests).
+  process.env.LOCAL_FILE_STORE_DIR ??= join(root, '.tmp', 'files');
   const url = testDatabaseUrl();
   if (isLocalTestDb(url)) {
     execFileSync('bash', [join(root, 'scripts', 'test-db.sh'), 'reset'], { stdio: 'inherit' });

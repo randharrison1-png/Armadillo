@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "db:start": "bash scripts/test-db.sh start",
     "db:stop": "bash scripts/test-db.sh stop",
-    "db:reset": "bash scripts/test-db.sh reset"
+    "db:reset": "bash scripts/test-db.sh reset",
+    "fixtures": "tsx tests/fixtures/make-fixtures.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",
@@ -42,6 +43,7 @@
     "server-only": "^0.0.1",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.7.0",
+    "unpdf": "^2.1.0",
     "zod": "^4.6.7",
     "zustand": "^5.1.0"
   },
@@ -58,8 +60,10 @@
     "eslint": "^10.14.0",
     "eslint-config-next": "^16.4.6",
     "jsdom": "^31.0.1",
+    "pdf-lib": "^1.17.1",
     "postcss": "^8.5.32",
     "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"
   }

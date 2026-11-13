@@ -21,6 +21,6 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 240_000,
-    env: { DATABASE_URL, ARMADILLO_TEST_AUTH: '1', TEST_AUTH_SECRET },
+    env: { DATABASE_URL, ARMADILLO_TEST_AUTH: '1', TEST_AUTH_SECRET, LOCAL_FILE_STORE_DIR: '.tmp/files' },
   },
 });
