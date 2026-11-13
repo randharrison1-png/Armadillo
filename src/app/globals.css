@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+
+/* Placeholder palette; Task 2 introduces the real design tokens. */
+body {
+  background: #111713;
+  color: #f0f4ef;
+  font-size: 16px;
+}

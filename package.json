@@ -1,0 +1,40 @@
+{
+  "name": "armadillo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --project unit --passWithNoTests",
+    "test:db": "vitest run --project db",
+    "test:e2e": "playwright test",
+    "db:start": "bash scripts/test-db.sh start",
+    "db:stop": "bash scripts/test-db.sh stop",
+    "db:reset": "bash scripts/test-db.sh reset"
+  },
+  "dependencies": {
+    "next": "^16.4.6",
+    "postgres": "^4.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^10.14.0",
+    "eslint-config-next": "^16.4.6",
+    "jsdom": "^31.0.1",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.0"
+  }
+}
