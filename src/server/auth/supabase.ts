@@ -1,5 +1,5 @@
 import 'server-only';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptionsWithName } from '@supabase/ssr';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { NextResponse, type NextRequest } from 'next/server';
@@ -20,11 +20,26 @@ function supabaseConfig(): { url: string; anonKey: string } {
   return { url, anonKey };
 }
 
+/**
+ * Options merged into every Supabase auth cookie. @supabase/ssr defaults to httpOnly: false (for
+ * browser clients) and no Secure flag; this app has no browser Supabase client, so the tokens are
+ * kept away from page JavaScript and sent only over HTTPS in production builds.
+ */
+export function supabaseCookieOptions(): CookieOptionsWithName {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  };
+}
+
 /** Per-request server client for Server Components, Server Actions and Route Handlers. */
 export async function createSupabaseServerClient(): Promise<SupabaseClient> {
   const { url, anonKey } = supabaseConfig();
   const store = await cookies();
   return createServerClient(url, anonKey, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll: () => store.getAll(),
       setAll(toSet) {
@@ -57,6 +72,7 @@ export async function updateSupabaseSession(request: NextRequest): Promise<{ res
   const { url, anonKey } = supabaseConfig();
   let response = NextResponse.next({ request });
   const supabase = createServerClient(url, anonKey, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(toSet, headers) {
