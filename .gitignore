@@ -1,0 +1,5 @@
+.superpowers/
+.tmp/
+node_modules/
+.next/
+.env*.local
