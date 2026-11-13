@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   BookOpen,
   ChevronsLeft,
@@ -57,6 +57,7 @@ function sessionIdFrom(pathname: string): string | null {
 
 export function Sidebar({ userEmail, sessions = [], libraryCounts = {} }: Props) {
   const pathname = usePathname();
+  const activeCategory = useSearchParams().get('category');
   const [collapsed, setCollapsed] = React.useState(false);
 
   React.useEffect(() => {
@@ -200,7 +201,7 @@ export function Sidebar({ userEmail, sessions = [], libraryCounts = {} }: Props)
               key: c.category,
               href: `/app/library?category=${c.category}`,
               label: `${c.label} (${libraryCounts[c.category] ?? 0})`,
-              isActive: false,
+              isActive: pathname === '/app/library' && activeCategory === c.category,
             })),
           )}
           {navLink('/p', 'Public Pastebin', Globe, matches(pathname, '/p'))}

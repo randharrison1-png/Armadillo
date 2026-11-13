@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 let path = '/app';
-vi.mock('next/navigation', () => ({ usePathname: () => path }));
+let search = '';
+vi.mock('next/navigation', () => ({ usePathname: () => path, useSearchParams: () => new URLSearchParams(search) }));
 vi.mock('@/server/auth/actions', () => ({ signOut: async () => {} }));
 
 import { Sidebar } from '@/components/shell/Sidebar';
@@ -24,5 +25,36 @@ describe('Sidebar active state', () => {
     path = '/app';
     render(<Sidebar userEmail="a@b.test" />);
     expect(current()).toEqual(['Dashboard']);
+  });
+});
+
+describe('Sidebar library children', () => {
+  const highlighted = () =>
+    screen
+      .getAllByRole('link')
+      .filter((l) => l.classList.contains('bg-surface-raised'))
+      .map((l) => l.textContent);
+
+  it('shows counts per category and links to ?category=', () => {
+    path = '/app/library';
+    search = '';
+    render(<Sidebar userEmail="a@b.test" libraryCounts={{ linux: 4, windows: 1 }} />);
+    expect(screen.getByRole('link', { name: 'Linux (4)' })).toHaveAttribute('href', '/app/library?category=linux');
+    expect(screen.getByRole('link', { name: 'Windows (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'LEADS/Audit (0)' })).toBeInTheDocument();
+    expect(highlighted()).toEqual([]);
+  });
+  it('highlights the child matching ?category= on the library page', () => {
+    path = '/app/library';
+    search = 'category=linux';
+    render(<Sidebar userEmail="a@b.test" libraryCounts={{ linux: 4 }} />);
+    expect(highlighted()).toEqual(['Linux (4)']);
+    expect(current()).toEqual(['Script Library']);
+  });
+  it('highlights nothing for a category param on another page', () => {
+    path = '/app';
+    search = 'category=linux';
+    render(<Sidebar userEmail="a@b.test" libraryCounts={{ linux: 4 }} />);
+    expect(highlighted()).toEqual([]);
   });
 });
