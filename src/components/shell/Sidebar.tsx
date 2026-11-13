@@ -113,10 +113,10 @@ export function Sidebar({ userEmail, sessions = [], libraryCounts = {} }: Props)
           <li key={i.key}>
             <Link
               href={i.href}
-              aria-current={i.isActive ? 'page' : undefined}
+              // The parent item carries aria-current; the open child is only highlighted.
               className={cn(
                 'flex h-8 items-center rounded-sm px-2 text-small transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                i.isActive ? active : idle,
+                i.isActive ? 'bg-surface-raised text-text' : idle,
               )}
             >
               <span className="truncate">{i.label}</span>
@@ -185,7 +185,7 @@ export function Sidebar({ userEmail, sessions = [], libraryCounts = {} }: Props)
 
         <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
           {navLink('/app', 'Dashboard', LayoutDashboard, matches(pathname, '/app', true))}
-          {navLink('/app/sessions', 'Sessions', FolderKanban, matches(pathname, '/app/sessions') && !currentSessionId)}
+          {navLink('/app/sessions', 'Sessions', FolderKanban, matches(pathname, '/app/sessions'))}
           {nested(
             sessions.map((s) => ({
               key: s.id,

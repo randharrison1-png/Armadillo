@@ -15,7 +15,9 @@ type Props = {
 };
 
 export function AppShell({ userEmail, sessions, libraryCounts, children }: Props) {
-  const { open, sections, toggle } = useInspectorStore();
+  const open = useInspectorStore((s) => s.open);
+  const sections = useInspectorStore((s) => s.sections);
+  const toggle = useInspectorStore((s) => s.toggle);
   return (
     <div className="flex h-screen bg-bg text-text">
       <Sidebar userEmail={userEmail} sessions={sessions} libraryCounts={libraryCounts} />
