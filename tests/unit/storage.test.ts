@@ -15,7 +15,7 @@ vi.mock('@/server/auth', () => ({
   },
 }));
 
-import { LocalFileStore, buildStoragePath, createUploadTarget, readPrivate, sanitizeFilename, uploadPrivate } from '@/server/files/storage';
+import { ForbiddenFileError, LocalFileStore, buildStoragePath, createUploadTarget, readPrivate, sanitizeFilename, uploadPrivate, verifyStoredUpload } from '@/server/files/storage';
 import { FileTooLargeError, UnsupportedFileTypeError } from '@/server/files/limits';
 
 let dir: string;
@@ -99,9 +99,48 @@ describe('uploadWithRetry', () => {
     await expect(uploadWithRetry(file, target, { fetchImpl: flaky, sleep })).resolves.toEqual({ storagePath: 'u/library/a' });
     expect(n).toBe(3);
     expect(delays).toEqual([500, 1000]);
+    // Lost response: first PUT stored the file, the retry gets 409 (object exists) -> still success.
+    let m = 0;
+    const lost = (async () => {
+      if (++m === 1) throw new TypeError('connection reset');
+      return new Response('', { status: 409 });
+    }) as unknown as typeof fetch;
+    await expect(uploadWithRetry(file, target, { fetchImpl: lost, sleep })).resolves.toEqual({ storagePath: 'u/library/a' });
     const bad = (async () => new Response('', { status: 403 })) as unknown as typeof fetch;
     await expect(uploadWithRetry(file, target, { fetchImpl: bad, sleep })).rejects.toThrow(/rejected \(403\)/);
     const down = (async () => { throw new TypeError('network'); }) as unknown as typeof fetch;
     await expect(uploadWithRetry(file, target, { fetchImpl: down, sleep })).rejects.toThrow(/after 3 attempts/);
+  });
+});
+
+describe('retry idempotency and verifyStoredUpload', () => {
+  it('local retries reuse the same storage path (no orphans)', async () => {
+    const f = () => new File([new Uint8Array([1])], 'a.txt');
+    const t = await createUploadTarget({ kind: 'script' }, 'a.txt', 1);
+    const one = await uploadPrivate(f(), { kind: 'script' }, { storagePath: t.storagePath });
+    const two = await uploadPrivate(f(), { kind: 'script' }, { storagePath: t.storagePath });
+    expect(one.storagePath).toBe(t.storagePath);
+    expect(two.storagePath).toBe(t.storagePath);
+    await expect(uploadPrivate(f(), { kind: 'script' }, { storagePath: `${OTHER}/library/${'a'.repeat(8)}-a.txt` })).rejects.toThrow(/invalid storage path/i);
+    await expect(uploadPrivate(f(), { kind: 'script' }, { storagePath: t.storagePath.replace('a.txt', 'b.txt') })).rejects.toThrow(/invalid storage path/i);
+  });
+
+  const put = (p: string, n: number) => new LocalFileStore(dir).put(p, new Uint8Array(n), 'application/octet-stream');
+  const uuid = '33333333-3333-4333-8333-333333333333';
+
+  it('accepts a stored file within limits', async () => {
+    await put(`${USER.id}/library/${uuid}-a.log`, 10);
+    await expect(verifyStoredUpload(`${USER.id}/library/${uuid}-a.log`, 'report')).resolves.toEqual({ size: 10 });
+  });
+  it('rejects oversize stored files (actual size, not declared)', async () => {
+    await put(`${USER.id}/library/${uuid}-a.ps1`, 2 * 1024 * 1024 + 1);
+    await expect(verifyStoredUpload(`${USER.id}/library/${uuid}-a.ps1`, 'script')).rejects.toBeInstanceOf(FileTooLargeError);
+  });
+  it('rejects wrong owner, bad extension, and missing objects', async () => {
+    await put(`${OTHER}/library/${uuid}-a.txt`, 1);
+    await expect(verifyStoredUpload(`${OTHER}/library/${uuid}-a.txt`, 'script')).rejects.toBeInstanceOf(ForbiddenFileError);
+    await put(`${USER.id}/library/${uuid}-a.exe`, 1);
+    await expect(verifyStoredUpload(`${USER.id}/library/${uuid}-a.exe`, 'script')).rejects.toBeInstanceOf(UnsupportedFileTypeError);
+    await expect(verifyStoredUpload(`${USER.id}/library/${uuid}-missing.txt`, 'script')).rejects.toThrow(/not found/i);
   });
 });

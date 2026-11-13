@@ -30,15 +30,18 @@ export async function uploadWithRetry(file: File, target: UploadTarget, opts: Up
       let res: Response;
       if (target.kind === 'local') {
         for (const [k, v] of Object.entries(opts.fields ?? {})) body.append(k, v);
+        // Same path on every attempt, so a retry after a lost response overwrites instead of orphaning.
+        body.append('storagePath', target.storagePath);
         body.append('file', file);
         res = await doFetch(target.url, { method: 'POST', body });
       } else {
         // Same wire format as supabase-js uploadToSignedUrl: PUT multipart, file under the empty field name.
         body.append('cacheControl', '3600');
         body.append('', file);
-        res = await doFetch(target.signedUrl, { method: 'PUT', body });
+        res = await doFetch(target.signedUrl, { method: 'PUT', body, headers: { 'x-upsert': 'true' } });
       }
-      if (res.ok) {
+      // 409 = the object already exists: an earlier attempt landed and only its response was lost.
+      if (res.ok || (target.kind === 'supabase-signed' && res.status === 409)) {
         if (target.kind === 'local') return (await res.json()) as { storagePath: string };
         return { storagePath: target.storagePath };
       }

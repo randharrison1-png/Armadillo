@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decodeText } from '@/server/files/encoding';
 import { extractDocument } from '@/server/files/extract';
-import { FileTooLargeError, UnsupportedFileTypeError, validateUpload, MAX_TEXT_BYTES } from '@/server/files/limits';
+import { FileTooLargeError, UnreadableDocumentError, UnsupportedFileTypeError, validateUpload, MAX_TEXT_BYTES } from '@/server/files/limits';
 
 const fx = (name: string) => new Uint8Array(readFileSync(join(process.cwd(), 'tests/fixtures', name)));
 
@@ -92,5 +92,18 @@ describe('extractDocument', () => {
     expect(() => validateUpload('x.log', 5 * 1024 * 1024, 'report')).not.toThrow();
     expect(() => validateUpload('shot.png', 10, 'evidence')).not.toThrow();
     expect(() => validateUpload('shot.png', 10, 'report')).toThrow(UnsupportedFileTypeError);
+  });
+
+  it('wraps unreadable PDFs in UnreadableDocumentError', async () => {
+    await expect(extractDocument(new TextEncoder().encode('%PDF-1.4 not really a pdf'), 'bad.pdf')).rejects.toBeInstanceOf(UnreadableDocumentError);
+    await expect(extractDocument(fx('sample.exe'), 'renamed.pdf')).rejects.toBeInstanceOf(UnreadableDocumentError);
+    await expect(extractDocument(fx('readme.pdf').subarray(0, 600), 'truncated.pdf')).rejects.toBeInstanceOf(UnreadableDocumentError);
+  });
+
+  it('uses the report size limit when kind is report', async () => {
+    const log = new TextEncoder().encode('line\n'.repeat(1_000_000)); // 5 MB
+    const r = await extractDocument(log, 'out.log', 'report');
+    expect(r.hasTextLayer).toBe(true);
+    await expect(extractDocument(log, 'out.log')).rejects.toBeInstanceOf(FileTooLargeError); // default readme kind: 2 MB
   });
 });

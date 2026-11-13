@@ -1,11 +1,11 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { requireUser } from '@/server/auth';
 import type { UploadTarget } from '@/lib/files/uploadClient';
-import { validateUpload, type UploadKind } from './limits';
+import { ALLOWED_EXTENSIONS, extensionOf, FileTooLargeError, limitFor, UnsupportedFileTypeError, validateUpload, type UploadKind } from './limits';
 
 export * from './limits';
 
@@ -13,6 +13,8 @@ export interface FileStore {
   put(path: string, bytes: Uint8Array, contentType: string): Promise<void>;
   get(path: string): Promise<Uint8Array>;
   removePrefix(prefix: string): Promise<void>;
+  /** Size of the stored object, or null if it does not exist. */
+  stat(path: string): Promise<{ size: number } | null>;
 }
 
 export type UploadScope = { sessionId?: string; kind: UploadKind };
@@ -59,6 +61,15 @@ export class LocalFileStore implements FileStore {
   async get(p: string): Promise<Uint8Array> {
     return new Uint8Array(await readFile(this.resolve(p)));
   }
+  async stat(p: string): Promise<{ size: number } | null> {
+    try {
+      const st = await stat(this.resolve(p));
+      return st.isFile() ? { size: st.size } : null;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw e;
+    }
+  }
   async removePrefix(prefix: string): Promise<void> {
     await rm(this.resolve(prefix), { recursive: true, force: true });
   }
@@ -79,6 +90,15 @@ export class SupabaseFileStore implements FileStore {
     const { data, error } = await this.client.storage.from(PRIVATE_BUCKET).download(p);
     if (error || !data) throw new Error(`Storage download failed: ${error?.message ?? 'not found'}`);
     return new Uint8Array(await data.arrayBuffer());
+  }
+  async stat(p: string): Promise<{ size: number } | null> {
+    const segments = assertSafePath(p);
+    const name = segments.pop()!;
+    const { data, error } = await this.client.storage.from(PRIVATE_BUCKET).list(segments.join('/'), { search: name, limit: 100 });
+    if (error) throw new Error(`Storage stat failed: ${error.message}`);
+    const hit = data?.find((e) => e.name === name && e.id);
+    const size = (hit?.metadata as { size?: number } | null | undefined)?.size;
+    return hit && typeof size === 'number' ? { size } : null;
   }
   async removePrefix(prefix: string): Promise<void> {
     assertSafePath(prefix);
@@ -137,12 +157,49 @@ export function buildStoragePath(ownerId: string, sessionId: string | undefined,
  * Server-side entry point for files that reach the server (server actions, the local route
  * handler; <= 4 MB). Validates type and size, then stores under the signed-in user's prefix.
  */
-export async function uploadPrivate(file: File, scope: UploadScope): Promise<{ storagePath: string }> {
+export async function uploadPrivate(
+  file: File,
+  scope: UploadScope,
+  opts: { storagePath?: string } = {},
+): Promise<{ storagePath: string }> {
   const user = await requireUser();
   validateUpload(file.name, file.size, scope.kind);
-  const storagePath = buildStoragePath(user.id, scope.sessionId, file.name);
+  // A client-chosen path (retry idempotency) is accepted only if it is exactly what we would generate.
+  const storagePath = opts.storagePath ? assertOwnedUploadPath(opts.storagePath, user.id, scope.sessionId, file.name) : buildStoragePath(user.id, scope.sessionId, file.name);
   await getFileStore().put(storagePath, new Uint8Array(await file.arrayBuffer()), file.type || 'application/octet-stream');
   return { storagePath };
+}
+
+function assertOwnedUploadPath(p: string, ownerId: string, sessionId: string | undefined, filename: string): string {
+  const seg = assertSafePath(p);
+  const ok =
+    seg.length === 3 &&
+    seg[0] === ownerId &&
+    seg[1] === (sessionId ?? 'library') &&
+    seg[2]!.slice(36, 37) === '-' &&
+    UUID_RE.test(seg[2]!.slice(0, 36)) &&
+    seg[2]!.slice(37) === sanitizeFilename(filename);
+  if (!ok) throw new Error('Invalid storage path for this upload');
+  return p;
+}
+
+/**
+ * Re-checks an uploaded object before a caller records its path (needed for direct-to-Storage
+ * uploads, whose declared size/type the server never saw): owner prefix, extension allowlist for
+ * `kind`, and the ACTUAL stored size. Tasks 8/10/16/18 must call this before saving a storage_path.
+ */
+export async function verifyStoredUpload(storagePath: string, kind: UploadKind): Promise<{ size: number }> {
+  const user = await requireUser();
+  const segments = assertSafePath(storagePath);
+  if (segments[0] !== user.id || segments.length < 3) throw new ForbiddenFileError();
+  const filename = segments[segments.length - 1]!;
+  const ext = extensionOf(filename);
+  if (!ALLOWED_EXTENSIONS[kind].includes(ext)) throw new UnsupportedFileTypeError(filename, ALLOWED_EXTENSIONS[kind]);
+  const st = await getFileStore().stat(storagePath);
+  if (!st) throw new Error('Uploaded file not found');
+  const limit = limitFor(ext, kind);
+  if (st.size > limit) throw new FileTooLargeError(filename, st.size, limit);
+  return st;
 }
 
 /** Reads a private file, refusing any path that is not under the current user's prefix. */

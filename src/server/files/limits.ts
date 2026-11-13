@@ -54,3 +54,14 @@ export function validateUpload(filename: string, size: number, kind: UploadKind)
   const limit = limitFor(ext, kind);
   if (size > limit) throw new FileTooLargeError(filename, size, limit);
 }
+
+/** The bytes are not a readable document of the claimed type (corrupt, encrypted, hostile, wrong format). */
+export class UnreadableDocumentError extends Error {
+  readonly name = 'UnreadableDocumentError';
+  constructor(
+    readonly filename: string,
+    readonly reason: string,
+  ) {
+    super(`Could not read "${filename}": ${reason}`);
+  }
+}

@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
   const file = form.get('file');
   const kind = form.get('kind');
   const sessionId = form.get('sessionId');
+  const storagePath = form.get('storagePath');
   if (!(file instanceof File) || typeof kind !== 'string' || !KINDS.includes(kind as UploadKind)) {
     return NextResponse.json({ error: 'file and a valid kind are required' }, { status: 400 });
   }
@@ -32,12 +33,12 @@ export async function POST(request: NextRequest) {
     const result = await uploadPrivate(file, {
       kind: kind as UploadKind,
       sessionId: typeof sessionId === 'string' && sessionId ? sessionId : undefined,
-    });
+    }, { storagePath: typeof storagePath === 'string' && storagePath ? storagePath : undefined });
     return NextResponse.json(result);
   } catch (e) {
     if (e instanceof UnsupportedFileTypeError) return NextResponse.json({ error: e.message }, { status: 415 });
     if (e instanceof FileTooLargeError) return NextResponse.json({ error: e.message }, { status: 413 });
-    if (e instanceof Error && /^Invalid (session|owner) id/.test(e.message)) return NextResponse.json({ error: e.message }, { status: 400 });
+    if (e instanceof Error && /^Invalid (session|owner) id|^Invalid storage path/.test(e.message)) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;
   }
 }
