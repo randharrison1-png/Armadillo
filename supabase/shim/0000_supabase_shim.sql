@@ -18,7 +18,12 @@ $$;
 -- Lets the connecting superuser `set role` to each of them.
 grant anon, authenticated, service_role to postgres;
 
+-- Same defaults as hosted Supabase: the API roles can use public and get all privileges on new
+-- objects there, so access is gated by RLS and explicit revokes, as in production.
 grant usage on schema public to anon, authenticated, service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
 
 create schema if not exists auth;
 

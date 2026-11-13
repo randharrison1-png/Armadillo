@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import { DEFAULT_TEST_DATABASE_URL, testDatabaseUrl } from './env';
+import { assertDisposableDatabase, isLocalTestDb, testDatabaseUrl } from './env';
 
 const root = join(import.meta.dirname, '..', '..');
 
@@ -14,17 +14,18 @@ function sqlFiles(dir: string): string[] {
 }
 
 /**
- * Local run (DATABASE_URL unset or the default): `scripts/test-db.sh reset` starts the
+ * Local run (DATABASE_URL unset or loopback on the local test port): `scripts/test-db.sh reset` starts the
  * bundled Postgres and rebuilds `armadillo_test` from shim + migrations.
  * External DB (e.g. the CI Postgres service container, DATABASE_URL pointing elsewhere): do not
  * touch the server; wipe the public/auth/paste schemas and re-apply shim + migrations.
  */
 export default async function setup() {
   const url = testDatabaseUrl();
-  if (url === DEFAULT_TEST_DATABASE_URL) {
+  if (isLocalTestDb(url)) {
     execFileSync('bash', [join(root, 'scripts', 'test-db.sh'), 'reset'], { stdio: 'inherit' });
     return;
   }
+  assertDisposableDatabase(url);
   const admin = postgres(url, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe('drop schema if exists public cascade; create schema public; drop schema if exists auth cascade; drop schema if exists paste cascade');
