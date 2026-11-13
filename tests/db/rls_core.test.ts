@@ -389,6 +389,33 @@ describe('completed session is read-only', () => {
     expect(Object.values(counts).every((n) => n === 1)).toBe(true);
   });
 
+  it('the completed session row cannot be reopened, edited or deleted by its owner', async () => {
+    const reopen = await pgError(
+      asUser(a.owner, (tx) => tx`update sessions set status = 'active', completed_at = null where id = ${a.sessionId}`),
+    );
+    expect(reopen.message).toMatch(/completed.*read-only/);
+    const rename = await pgError(asUser(a.owner, (tx) => tx`update sessions set title = 'Renamed' where id = ${a.sessionId}`));
+    expect(rename.message).toMatch(/completed.*read-only/);
+    const del = await pgError(asUser(a.owner, (tx) => tx`delete from sessions where id = ${a.sessionId}`));
+    expect(del.message).toMatch(/completed.*read-only/);
+    // Not even service_role or the superuser can reopen it.
+    const admin = await pgError(sql`update sessions set status = 'active', completed_at = null where id = ${a.sessionId}`);
+    expect(admin.message).toMatch(/completed.*read-only/);
+    const [row] = await sql`select status, title from sessions where id = ${a.sessionId}`;
+    expect(row.status).toBe('completed');
+  });
+
+  it('an active session can still be updated and completed by its owner', async () => {
+    const active = await buildGraph(a.owner);
+    const row = await asUser(a.owner, async (tx) => {
+      await tx`update sessions set title = 'Renamed', current_cycle = 2 where id = ${active.sessionId}`;
+      await tx`update sessions set status = 'completed', completed_at = now() where id = ${active.sessionId}`;
+      const [r] = await tx`select title, current_cycle, status from sessions where id = ${active.sessionId}`;
+      return r;
+    });
+    expect(row).toEqual({ title: 'Renamed', current_cycle: 2, status: 'completed' });
+  });
+
   it('activity can still be logged against a completed session', async () => {
     const id = await asUser(a.owner, (tx) => insertRow(tx, 'activity_log', factories.activity_log(a)));
     expect(id).toBeTruthy();

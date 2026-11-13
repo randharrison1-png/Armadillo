@@ -116,8 +116,13 @@ describe('insert-only tables', () => {
              has_function_privilege('anon', p.oid, 'execute') as anon,
              has_function_privilege('authenticated', p.oid, 'execute') as authed
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('forbid_mutation', 'assert_session_writable')`;
-    expect(rows.map((r) => r.proname).sort()).toEqual(['assert_session_writable', 'forbid_mutation']);
+      where n.nspname = 'public'
+        and p.proname in ('forbid_mutation', 'assert_session_writable', 'forbid_completed_session_change')`;
+    expect(rows.map((r) => r.proname).sort()).toEqual([
+      'assert_session_writable',
+      'forbid_completed_session_change',
+      'forbid_mutation',
+    ]);
     for (const r of rows) expect({ name: r.proname, anon: r.anon, authed: r.authed }).toEqual({ name: r.proname, anon: false, authed: false });
   });
 });
