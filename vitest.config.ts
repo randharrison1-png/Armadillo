@@ -1,7 +1,11 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
-const alias = { '@': fileURLToPath(new URL('./src', import.meta.url)) };
+const alias = {
+  '@': fileURLToPath(new URL('./src', import.meta.url)),
+  // `server-only` throws unless resolved with the react-server condition (as Next does for server code).
+  'server-only': fileURLToPath(new URL('./node_modules/server-only/empty.js', import.meta.url)),
+};
 
 export default defineConfig({
   test: {

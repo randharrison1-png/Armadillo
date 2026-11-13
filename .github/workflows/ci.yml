@@ -30,7 +30,7 @@ jobs:
       # Not the local default, so tests/db/globalSetup.ts uses this service instead of scripts/test-db.sh.
       DATABASE_URL: postgres://postgres@127.0.0.1:5432/armadillo_test
       ARMADILLO_TEST_AUTH: '1'
-      TEST_AUTH_SECRET: ci-only-secret
+      TEST_AUTH_SECRET: ci-only-test-auth-secret-0123456789abcdef  # >= 32 chars; test provider only
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
