@@ -18,8 +18,10 @@ import type { HighImpactCategory, HighImpactFlag, ScriptLanguage } from '@/lib/t
  *    except sshd_config keywords, which sshd itself reads case-insensitively. Text and Markdown
  *    "scripts" get both tables.
  *  - Pure comment lines are skipped: `#` for PowerShell and Bash, `REM` / `@REM` / `::` for batch.
- *    Code with a trailing comment is still scanned. Block comments (`<# … #>`, heredocs) are scanned
- *    like code, which can only add flags.
+ *    Code with a trailing comment is still scanned. A PowerShell line containing `#>` is never
+ *    skipped: `#> Stop-Service WinRM` closes a block comment and runs code. Block comments
+ *    (`<# … #>`, also with code after `#>` on the same line) and heredocs are scanned like code,
+ *    which can only add flags.
  *  - Continued commands (PowerShell backtick, Bash backslash, batch caret at the end of a line) are
  *    joined and reported on their first physical line.
  *  - At most one flag per category per line; a line can carry several categories.
@@ -58,10 +60,20 @@ const WINDOWS: Rule[] = [
   { category: 'accounts', pattern: /\b(?:Disable|Remove|Set|Rename)-AD(?:Account|User)\b|\bSet-ADAccountPassword\b|\b(?:Add|Remove)-ADGroupMember\b/i, reason: 'Changes a domain account or group' },
   { category: 'accounts', pattern: /\bnet(?:\.exe)?\s+(?:user|localgroup|group)\s+\S+\s+\S/i, reason: 'Changes an account or group (net user / net localgroup)' },
   { category: 'accounts', pattern: /\bwmic(?:\.exe)?\b.*\buseraccount\b.*\bset\b/i, reason: 'Changes an account (wmic useraccount)' },
+  { category: 'accounts', pattern: /\bnet(?:\.exe)?\s+accounts\b.*\/\w+/i, reason: 'Changes the password and lockout policy (net accounts)' },
+  // secedit /configure applies a whole security template: account and lockout policy, user rights
+  // (e.g. who may log on through Remote Desktop), service start modes. Filed under accounts, the
+  // area most templates change; the reason names the rest.
+  {
+    category: 'accounts',
+    pattern: /\bsecedit(?:\.exe)?\b.*\/configure\b/i,
+    reason: 'Applies a security template (account policy, user rights, services); can block logons, including Remote Desktop',
+  },
   // Services
   { category: 'services', pattern: /\b(?:Stop|Suspend|Remove)-Service\b/i, reason: 'Stops or removes a service' },
   { category: 'services', pattern: /\bSet-Service\b.*-(?:StartupType|StartType)\s*:?\s*['"]?(?:Disabled|Manual)\b/i, reason: 'Sets a service to disabled or manual start' },
   { category: 'services', pattern: /\bSet-Service\b.*-Status\s*:?\s*['"]?(?:Stopped|Paused)\b/i, reason: 'Stops a service' },
+  { category: 'services', pattern: /\bSet-Service\b.*\s@\w+/i, reason: 'Changes a service with splatted parameters the scanner cannot read' },
   { category: 'services', pattern: /\bsc(?:\.exe)?\s+(?:\\\\\S+\s+)?(?:stop|pause|config|delete|failure)\b/i, reason: 'Stops, reconfigures or deletes a service (sc)' },
   { category: 'services', pattern: /\bnet(?:\.exe)?\s+(?:stop|pause)\b/i, reason: 'Stops a service (net stop)' },
   { category: 'services', pattern: /\bCurrentControlSet\\+Services\\+[^\s'"\\]+.*\bStart\b/i, reason: "Changes a service's start type in the registry" },
@@ -72,7 +84,7 @@ const WINDOWS: Rule[] = [
   { category: 'firewall', pattern: /\bMpsSvc\b/i, reason: 'Touches the Windows Firewall service' },
   // Remote access
   { category: 'remote_access', pattern: /\bfDenyTSConnections\b/i, reason: 'Turns Remote Desktop connections on or off' },
-  { category: 'remote_access', pattern: /Terminal Server/i, reason: 'Changes Remote Desktop (Terminal Server) settings' },
+  { category: 'remote_access', pattern: /Terminal Serv(?:er|ices)/i, reason: 'Changes Remote Desktop settings or policy (Terminal Server / Terminal Services)' },
   { category: 'remote_access', pattern: /\bRemote Desktop\b|\b(?:TermService|UmRdpService|SessionEnv)\b/i, reason: 'Changes Remote Desktop access or its services' },
   { category: 'remote_access', pattern: /\bWinRM\b|\bWSMan\b|\bSet-WSMan\w*|\b(?:Enable|Disable)-PSRemoting\b/i, reason: 'Changes PowerShell remoting (WinRM)' },
   { category: 'remote_access', pattern: /sshd_config|\bsshd\b|\bOpenSSH\b/i, reason: 'Changes the SSH server or its configuration' },
@@ -111,6 +123,11 @@ const BASH: Rule[] = [
     pattern: /\bsystemctl\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*(?:stop|disable|mask|kill|restart|reload|try-restart)\b.*\b(?:sshd?|xrdp|vnc\S*)\b|\bservice\s+(?:sshd?|xrdp)\s+(?:stop|restart|reload)\b/,
     reason: 'Stops or restarts a remote-access service',
   },
+  {
+    category: 'remote_access',
+    pattern: /\b(?:pkill|killall)\b.*\b(?:sshd?|xrdp)\b|\bkill\b.*\b(?:pidof|pgrep)\b.*\b(?:sshd?|xrdp)\b/,
+    reason: 'Kills the SSH (or RDP) server, which ends remote sessions',
+  },
   { category: 'remote_access', pattern: /\/etc\/hosts\.(?:allow|deny)\b/, reason: 'Changes TCP wrappers access rules' },
   {
     category: 'remote_access',
@@ -119,7 +136,11 @@ const BASH: Rule[] = [
   },
   // Other ways to lose the machine
   { category: 'other', pattern: /\b(?:shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b/, reason: 'Restarts or shuts down the machine' },
-  { category: 'other', pattern: /\bip\s+link\s+set\s+\S+\s+down\b|\bifdown\b|\bnmcli\b.*\b(?:down|off|disconnect)\b/, reason: 'Takes a network interface down' },
+  {
+    category: 'other',
+    pattern: /\bip\s+link\s+set\b.*\bdown\b|\bifconfig\s+\S+\s+down\b|\bifdown\b|\bnmcli\b.*\b(?:down|off|disconnect)\b/,
+    reason: 'Takes a network interface down (cuts remote access and scoring)',
+  },
   {
     category: 'other',
     pattern: /\beval\b|\bbase64\s+(?:-d|--decode)\b|\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k)?sh\b|\b(?:ba)?sh\s+-c\b|\bsource\s+<\(/,
@@ -130,7 +151,8 @@ const BASH: Rule[] = [
 type Syntax = { comment: RegExp | null; continuation: RegExp | null };
 
 const SYNTAX: Record<ScriptLanguage, Syntax> = {
-  powershell: { comment: /^\s*#/, continuation: /`\s*$/ },
+  // A line with `#>` ends a block comment and may carry code after it: never a pure comment.
+  powershell: { comment: /^\s*(?!.*#>)#/, continuation: /`\s*$/ },
   bash: { comment: /^\s*#/, continuation: /\\\s*$/ },
   batch: { comment: /^\s*@?(?:rem(?:\s|$)|::)/i, continuation: /\^\s*$/ },
   text: { comment: null, continuation: null },

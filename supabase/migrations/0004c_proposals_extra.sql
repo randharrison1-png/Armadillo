@@ -8,6 +8,10 @@
 -- Decided proposals are final: once a proposal is accepted or rejected, the row cannot be updated
 -- (no double accept, no reopening, no rewriting what was accepted). Same account-deletion exemption
 -- as 0003: rows go away with auth.users. Deleting a session still cascades (DELETE is not blocked).
+-- One update IS allowed: the ON DELETE SET NULL actions of proposals_readme_fkey and
+-- proposals_conversation_fkey, i.e. an update whose only changes are readme_id and/or
+-- conversation_id becoming NULL. Deleting a README or conversation therefore keeps the decided
+-- proposal (as 0002 documents) with that link cleared.
 
 alter table public.proposals
   add column readme_id uuid;
@@ -26,6 +30,13 @@ security definer
 set search_path = ''
 as $$
 begin
+  -- FK SET NULL: nothing but readme_id / conversation_id changed, each kept or set to NULL.
+  -- (updated_at is ignored: proposals_set_updated_at may already have run.)
+  if (to_jsonb(new) - 'readme_id' - 'conversation_id' - 'updated_at') = (to_jsonb(old) - 'readme_id' - 'conversation_id' - 'updated_at')
+     and (new.readme_id is null or new.readme_id is not distinct from old.readme_id)
+     and (new.conversation_id is null or new.conversation_id is not distinct from old.conversation_id) then
+    return new;
+  end if;
   if old.status <> 'pending' and exists (select 1 from auth.users u where u.id = old.owner_id) then
     raise exception 'proposal % is already decided (%)', old.id, old.status
       using hint = 'Accepted and rejected proposals cannot be changed.';

@@ -414,3 +414,62 @@ describe('loadProposal', () => {
     expect(await actions.loadAdaptationOptions('nope')).toBeNull();
   });
 });
+
+describe('decided proposals when their README or conversation is deleted (ON DELETE SET NULL)', () => {
+  const insertDecided = async (w: World, over: { conversationId?: string | null; status?: 'rejected' | 'pending' } = {}) =>
+    (
+      await sql<{ id: string }[]>`
+        insert into public.proposals (owner_id, session_id, conversation_id, readme_id, kind, base_version_id, proposed_content, summary, flags, status)
+        values (${w.userId}, ${w.sessionId}, ${over.conversationId ?? null}, ${w.readmeId}, 'adaptation', ${w.baseVersionId},
+                'Write-Host x', 'Rejected idea', '[]'::jsonb, ${over.status ?? 'rejected'})
+        returning id`
+    )[0]!.id;
+  const newConversation = async (w: World) =>
+    (await sql<{ id: string }[]>`insert into public.conversations (owner_id, session_id, mode) values (${w.userId}, ${w.sessionId}, 'adaptation') returning id`)[0]!.id;
+
+  it('deleting a README or conversation referenced by accepted/rejected proposals succeeds; the link is cleared, the proposal kept', async () => {
+    const w = await world();
+    const accepted = await propose(w);
+    await actions.acceptProposal({ proposalId: accepted.id, acknowledgedFlagIds: ids(accepted.flags) });
+    const conv = await newConversation(w);
+    const rejected = await insertDecided(w, { conversationId: conv });
+    const before = await proposalRow(accepted.id);
+    const rejectedBefore = await proposalRow(rejected);
+
+    await withUser(w.userId, (tx) => tx`delete from public.conversations where id = ${conv}`);
+    await withUser(w.userId, (tx) => tx`delete from public.readmes where id = ${w.readmeId}`);
+
+    const a = await proposalRow(accepted.id);
+    expect(a).toMatchObject({ status: 'accepted', readme_id: null, result_version_id: before.result_version_id, proposed_content: before.proposed_content, summary: before.summary });
+    expect(a.flags).toEqual(before.flags);
+    const r = await proposalRow(rejected);
+    expect(r).toMatchObject({ status: 'rejected', readme_id: null, conversation_id: null, proposed_content: rejectedBefore.proposed_content, summary: rejectedBefore.summary });
+    // Still viewable.
+    expect(await actions.loadProposal(accepted.id)).toMatchObject({ readmeLabel: null, proposal: { status: 'accepted' }, readOnly: true });
+  });
+
+  it('any other update to a decided proposal is still refused (also when combined with nulling a link)', async () => {
+    const w = await world();
+    const conv = await newConversation(w);
+    const rejected = await insertDecided(w, { conversationId: conv });
+    const otherReadme = (await addReadmeFor(w.userId, { sessionId: w.sessionId, pasted: 'Second README' })).id;
+    const conv2 = await newConversation(w);
+    const attempts = [
+      sql`update public.proposals set summary = 'rewritten' where id = ${rejected}`,
+      sql`update public.proposals set status = 'pending' where id = ${rejected}`,
+      sql`update public.proposals set proposed_content = 'Stop-Service WinRM' where id = ${rejected}`,
+      sql`update public.proposals set flags = '[]'::jsonb, summary = 'x' where id = ${rejected}`,
+      sql`update public.proposals set readme_id = ${otherReadme} where id = ${rejected}`,
+      sql`update public.proposals set conversation_id = ${conv2} where id = ${rejected}`,
+      sql`update public.proposals set readme_id = null, summary = 'sneaky' where id = ${rejected}`,
+      sql`update public.proposals set conversation_id = null, status = 'pending' where id = ${rejected}`,
+    ];
+    for (const q of attempts) await expect(q).rejects.toThrow(/already decided/);
+    expect(await proposalRow(rejected)).toMatchObject({ status: 'rejected', summary: 'Rejected idea', readme_id: w.readmeId, conversation_id: conv });
+
+    // Pending proposals are unaffected by the trigger.
+    const pending = await insertDecided(w, { status: 'pending' });
+    await sql`update public.proposals set summary = 'edited' where id = ${pending}`;
+    expect((await proposalRow(pending)).summary).toBe('edited');
+  });
+});

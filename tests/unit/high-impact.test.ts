@@ -34,6 +34,10 @@ const CASES: [file: string, expected: Expected][] = [
   ['firewall.sh', [[2, 'firewall'], [3, 'firewall'], [4, 'firewall'], [5, 'firewall']]],
   ['remote_access.sh', [[2, 'remote_access'], [3, 'remote_access'], [5, 'remote_access']]],
   ['other.sh', [[3, 'other'], [4, 'other'], [5, 'other']]],
+  // `#>` closing a block comment, net accounts, secedit /configure, the RDP policy key, splatting.
+  ['policy.ps1', [[3, 'services'], [3, 'remote_access'], [6, 'accounts'], [7, 'accounts'], [9, 'remote_access'], [11, 'services'], [12, 'other']]],
+  // Killing sshd, interfaces taken down.
+  ['network.sh', [[3, 'remote_access'], [4, 'remote_access'], [5, 'remote_access'], [6, 'other'], [7, 'other']]],
 ];
 
 const pairs = (flags: HighImpactFlag[]) => flags.map((f) => [f.line, f.category]);
@@ -118,6 +122,46 @@ describe('scanHighImpact', () => {
     expect(pairs(scanHighImpact('userdel eve  # remove eve', 'bash'))).toEqual([[1, 'accounts']]);
     // "REMOVE" is not a REM comment.
     expect(pairs(scanHighImpact('net user remove_me /delete', 'batch'))).toEqual([[1, 'accounts']]);
+  });
+
+  it('a PowerShell line with #> is code, not a comment: it closes a block comment', () => {
+    expect(pairs(scanHighImpact('<#\n  notes\n#> Stop-Service WinRM -Force', 'powershell'))).toEqual([
+      [3, 'services'],
+      [3, 'remote_access'],
+    ]);
+    expect(pairs(scanHighImpact('   #>Disable-LocalUser Guest', 'powershell'))).toEqual([[1, 'accounts']]);
+    expect(pairs(scanHighImpact('<# note #> Stop-Service Spooler', 'powershell'))).toEqual([[1, 'services']]);
+    // Plain comments are still skipped; Bash and batch keep their own rules.
+    expect(scanHighImpact('# Stop-Service Spooler', 'powershell')).toEqual([]);
+    expect(scanHighImpact('#> userdel eve', 'bash')).toEqual([]);
+    expect(scanHighImpact('REM #> net stop spooler', 'batch')).toEqual([]);
+  });
+
+  it('flags policy, RDP-policy, splatted and interface/SSH-kill commands', () => {
+    const ps: [string, HighImpactCategory][] = [
+      ['secedit /configure /db secedit.sdb /cfg baseline.inf', 'accounts'],
+      ['SECEDIT.EXE /CONFIGURE /CFG x.inf /DB x.sdb', 'accounts'],
+      ['net accounts /minpwlen:12', 'accounts'],
+      ["reg add 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' /v fDenyTSConnections /d 1", 'remote_access'],
+      ["New-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name UserAuthentication -Value 1", 'remote_access'],
+      ['Set-Service @svc', 'services'],
+      ['Set-Service -Verbose @svc', 'services'],
+    ];
+    for (const [line, category] of ps) expect(scanHighImpact(line, 'powershell').map((f) => f.category), line).toContain(category);
+    expect(pairs(scanHighImpact('secedit /configure /cfg x.inf /db x.sdb', 'batch'))).toEqual([[1, 'accounts']]);
+    for (const line of ['net accounts', 'secedit /export /cfg out.inf', 'secedit /analyze /db x.sdb']) expect(scanHighImpact(line, 'powershell'), line).toEqual([]);
+
+    const sh: [string, HighImpactCategory][] = [
+      ['pkill sshd', 'remote_access'],
+      ['killall -9 sshd', 'remote_access'],
+      ['pkill -f xrdp', 'remote_access'],
+      ['kill -9 $(pgrep sshd)', 'remote_access'],
+      ['ifconfig ens33 down', 'other'],
+      ['ip link set eth0 down', 'other'],
+      ['ip link set dev eth0 down', 'other'],
+    ];
+    for (const [line, category] of sh) expect(scanHighImpact(line, 'bash').map((f) => f.category), line).toContain(category);
+    for (const line of ['pgrep sshd', 'pkill firefox', 'ifconfig eth0', 'ip link show', 'ip link set eth0 up']) expect(scanHighImpact(line, 'bash'), line).toEqual([]);
   });
 
   it('reports a continued command on its first physical line', () => {
