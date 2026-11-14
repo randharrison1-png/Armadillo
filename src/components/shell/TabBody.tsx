@@ -25,6 +25,10 @@ const ReadmeTab = dynamic(() => import('@/features/readme/ReadmeTab').then((m) =
   ssr: false,
   loading: () => <LoadingState label="Loading README" />,
 });
+const ClaudeTab = dynamic(() => import('@/features/claude/ClaudeTab').then((m) => m.ClaudeTab), {
+  ssr: false,
+  loading: () => <LoadingState label="Loading Claude" />,
+});
 const VersionDiffTab = dynamic(() => import('@/features/library/VersionDiffTab').then((m) => m.VersionDiffTab), {
   ssr: false,
   loading: () => <LoadingState label="Loading comparison" />,
@@ -53,6 +57,7 @@ export function TabBody({ tab, namespace }: { tab: TabDescriptor; namespace: str
     case 'readme':
       return <ReadmeTab tab={tab} namespace={namespace} />;
     case 'claude':
+      return <ClaudeTab tab={tab} namespace={namespace} />;
     case 'flowchart':
     case 'report':
     case 'requirements':

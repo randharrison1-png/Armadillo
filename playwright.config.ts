@@ -4,6 +4,9 @@ const PORT = 3100;
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://postgres@127.0.0.1:54329/armadillo_test';
 // Test-only HMAC key for the ARMADILLO_TEST_AUTH cookie (>= 32 chars). Never used outside e2e.
 const TEST_AUTH_SECRET = process.env.TEST_AUTH_SECRET ?? 'e2e-only-test-auth-secret-0123456789abcdef';
+// The app talks to the local Anthropic mock (tests/support/anthropic-mock.ts, started in globalSetup),
+// never the real API.
+const ANTHROPIC_MOCK_PORT = Number(process.env.ANTHROPIC_MOCK_PORT ?? 3199);
 
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -21,6 +24,16 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 240_000,
-    env: { DATABASE_URL, ARMADILLO_TEST_AUTH: '1', TEST_AUTH_SECRET, LOCAL_FILE_STORE_DIR: '.tmp/files' },
+    env: {
+      DATABASE_URL,
+      ARMADILLO_TEST_AUTH: '1',
+      TEST_AUTH_SECRET,
+      LOCAL_FILE_STORE_DIR: '.tmp/files',
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${ANTHROPIC_MOCK_PORT}`,
+      ANTHROPIC_API_KEY: 'test-key',
+      CLAUDE_MAX_RETRIES: '0',
+      // Test-only key-encryption secret (>= 32 chars) for saved Claude keys.
+      KEY_ENCRYPTION_SECRET: 'e2e-only-key-encryption-secret-0123456789abcdef',
+    },
   },
 });
