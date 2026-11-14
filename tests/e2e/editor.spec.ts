@@ -254,3 +254,84 @@ test('fork to a session opens the session copy; closing a dirty tab asks first',
   await page.goto('/app/library');
   await expect(page.getByRole('row').filter({ hasText: 'Universal base' })).toContainText('v1');
 });
+
+/** In-app (client-side) navigation away from the script and back: in-memory drafts survive it. */
+async function leaveAndReturn(page: Page, name: string) {
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Script Library' }).click();
+  await expect(page).toHaveURL(/\/app\/library$/);
+  await page.getByRole('row').filter({ hasText: name }).getByRole('link', { name: 'Open' }).click();
+  await expect(editor(page)).toBeVisible();
+}
+
+async function saveElsewhere(page: Page, line: string) {
+  const other = await page.context().newPage();
+  await other.goto(page.url());
+  await appendLine(other, line);
+  await save(other);
+  await expect(history(other).getByRole('listitem')).toHaveCount(2);
+  await other.close();
+}
+
+test('a clean draft from an older version never hides the current one', async ({ page }) => {
+  await signIn(page);
+  await createScript(page, { name: 'Stale clean', filename: 'sc.sh', content: 'echo base' });
+  await openScript(page, 'Stale clean');
+  await expect(editor(page)).toContainText('echo base');
+  await saveElsewhere(page, 'echo newer');
+
+  await leaveAndReturn(page, 'Stale clean');
+  await expect(page.getByText('Saved as v2')).toBeVisible();
+  await expect(editor(page)).toContainText('echo newer');
+  await expect(page.getByRole('alert').filter({ hasText: 'was saved after you opened this' })).toHaveCount(0);
+});
+
+test('a dirty draft from an older version shows the conflict banner before any save', async ({ page }) => {
+  await signIn(page);
+  await createScript(page, { name: 'Stale dirty', filename: 'sd.sh', content: 'echo base' });
+  await openScript(page, 'Stale dirty');
+  await appendLine(page, 'echo mine');
+  await saveElsewhere(page, 'echo theirs');
+
+  await leaveAndReturn(page, 'Stale dirty');
+  const conflict = page.getByRole('alert').filter({ hasText: 'v2 was saved after you opened this' });
+  await expect(conflict).toBeVisible();
+  await expect(editor(page)).toContainText('echo mine');
+  await conflict.getByRole('button', { name: 'Save as new version based on v2' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Save as v3' }).click();
+  await expect(history(page).getByRole('listitem')).toHaveCount(3);
+  await expect(conflict).toBeHidden();
+});
+
+test('an ANSI (Windows-1252) .ps1 downloads byte-identical; text ANSI cannot hold is saved as UTF-8 with BOM, with notice', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/app/library');
+  await page.getByRole('button', { name: 'Upload file' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Upload script' });
+  await dialog.getByLabel('File').setInputFiles(path.join(FIXTURES, 'cp1252.ps1'));
+  await dialog.getByRole('button', { name: 'Upload' }).click();
+  await expect(dialog).toBeHidden();
+  const original = readFileSync(path.join(FIXTURES, 'cp1252.ps1'));
+  const row = page.getByRole('row').filter({ hasText: 'cp1252.ps1' });
+  const [download] = await Promise.all([page.waitForEvent('download'), row.getByRole('link', { name: 'Download' }).click()]);
+  expect(readFileSync(await download.path()).equals(original)).toBe(true);
+
+  await row.getByRole('link', { name: 'Open' }).click();
+  await expect(editor(page)).toContainText('–Force # café');
+  await expect(page.getByText('Windows-1252 (ANSI) · CRLF').first()).toBeVisible();
+
+  // Still fits ANSI: no notice.
+  await appendLine(page, '# é – €');
+  await expect(page.getByText('cannot store')).toHaveCount(0);
+  // An arrow does not exist in Windows-1252: warned before saving…
+  await page.keyboard.type(' →');
+  await expect(page.getByRole('note').filter({ hasText: 'Windows-1252 (ANSI) cannot store “→”' })).toBeVisible();
+  await save(page);
+  // …and told after.
+  await expect(page.getByText('Saved v2 as UTF-8 with BOM')).toBeVisible();
+  await expect(history(page).getByRole('listitem').first()).toContainText('UTF-8 with BOM · CRLF');
+  await expect(history(page).getByRole('listitem').filter({ hasText: 'v1' })).toContainText('Windows-1252 (ANSI) · CRLF');
+  const [v2] = await Promise.all([page.waitForEvent('download'), history(page).getByRole('link', { name: 'Download v2' }).click()]);
+  const bytes = readFileSync(await v2.path());
+  expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  expect(bytes.toString('utf8')).toContain('# é – € →');
+});

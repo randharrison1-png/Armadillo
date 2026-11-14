@@ -28,7 +28,8 @@
 create type public.script_category as enum ('windows', 'windows_server', 'linux', 'leads_audit');
 create type public.script_function as enum ('universal_hardening', 'leads_audit', 'session_generated');
 create type public.script_language as enum ('powershell', 'bash', 'batch', 'text', 'markdown');
-create type public.text_encoding as enum ('utf-8', 'utf-8-bom', 'utf-16le', 'utf-16be');
+-- windows-1252: ANSI files (no BOM, not valid UTF-8) as Notepad / Windows PowerShell 5.1 write them.
+create type public.text_encoding as enum ('utf-8', 'utf-8-bom', 'utf-16le', 'utf-16be', 'windows-1252');
 create type public.step_key as enum (
   'open_readme', 'forensic_questions', 'claude_adaptation', 'run_hardening',
   'run_leads', 'inspect_leads', 'run_remediation', 'check_points', 'submit_final'

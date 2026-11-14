@@ -154,8 +154,8 @@ export async function createScriptFor(
 /**
  * The upload path after the bytes are read back from storage: decode (encoding + line ending
  * detected from the bytes, BOM removed), then store the decoded text verbatim as v1. Download
- * (encodeForDownload) re-applies exactly that encoding, so the file round-trips byte for byte —
- * except windows-1252 fallbacks, which are stored and re-encoded as UTF-8 (see DecodedText.fallback).
+ * (encodeForDownload) re-applies exactly that encoding (ANSI/Windows-1252 included), so the file
+ * round-trips byte for byte.
  */
 export function createScriptFromUploadFor(
   userId: string,
@@ -167,7 +167,7 @@ export function createScriptFromUploadFor(
   return createScriptFor(
     userId,
     { ...meta, content: decoded.text, format: { encoding: decoded.encoding, lineEnding: decoded.lineEnding } },
-    { action: 'script.upload', meta: { ...activityMeta, ...(decoded.fallback ? { decodedAs: decoded.fallback } : {}) } },
+    { action: 'script.upload', meta: { ...activityMeta, encoding: decoded.encoding } },
   );
 }
 

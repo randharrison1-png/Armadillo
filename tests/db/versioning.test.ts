@@ -181,7 +181,7 @@ describe('restoreVersionFor', () => {
 });
 
 describe('download round-trip through the upload path', () => {
-  it.each(['utf16le-crlf.ps1', 'utf8-bom.ps1', 'lf.sh'])('round-trips %s byte-for-byte', async (name) => {
+  it.each(['utf16le-crlf.ps1', 'utf8-bom.ps1', 'lf.sh', 'cp1252.ps1'])('round-trips %s byte-for-byte', async (name) => {
     const u = await createTestUser();
     const bytes = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
     const s = await createScriptFromUploadFor(
@@ -203,6 +203,43 @@ describe('download round-trip through the upload path', () => {
     if (r.status !== 'created') throw new Error('expected created');
     const expected = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("Write-Host 'hello'\r\nGet-Date\r\nexit 0\r\n", 'utf16le')]);
     expect(Buffer.from(encodeForDownload(r.version)).equals(expected)).toBe(true);
+  });
+});
+
+describe('windows-1252 (ANSI) scripts', () => {
+  const upload = async (userId: string, filename: string) => {
+    const bytes = new Uint8Array(readFileSync(path.join(FIXTURES, 'cp1252.ps1')));
+    return createScriptFromUploadFor(userId, { ...base, name: filename, filename }, bytes, { storagePath: `${userId}/x/${filename}` });
+  };
+
+  it('stores encoding windows-1252 and keeps it while the text still fits', async () => {
+    const u = await createTestUser();
+    const s = await upload(u.id, 'ansi.ps1');
+    const [v1] = await versionsOf(s.id);
+    expect(v1).toMatchObject({ encoding: 'windows-1252', line_ending: 'crlf' });
+    const r = await saveScriptVersionFor(u.id, { scriptId: s.id, baseVersionId: v1!.id, content: `${v1!.content}Write-Host 'é – €'\r\n`, author: 'user' });
+    if (r.status !== 'created') throw new Error('expected created');
+    expect(r.version.encoding).toBe('windows-1252');
+    const expected = Buffer.concat([readFileSync(path.join(FIXTURES, 'cp1252.ps1')), Buffer.from([0x57, 0x72, 0x69, 0x74, 0x65, 0x2d, 0x48, 0x6f, 0x73, 0x74, 0x20, 0x27, 0xe9, 0x20, 0x96, 0x20, 0x80, 0x27, 0x0d, 0x0a])]);
+    expect(Buffer.from(encodeForDownload(r.version)).equals(expected)).toBe(true);
+  });
+
+  it.each([
+    ['ansi.ps1', 'utf-8-bom'],
+    ['ansi.bat', 'utf-8'],
+    ['ansi.cmd', 'utf-8'],
+    ['ansi.txt', 'utf-8'],
+  ] as const)('%s: text Windows-1252 cannot hold switches the new version to %s (old versions keep theirs)', async (filename, expected) => {
+    const u = await createTestUser();
+    const s = await upload(u.id, filename);
+    const r = await saveScriptVersionFor(u.id, { scriptId: s.id, baseVersionId: s.current_version_id, content: 'Write-Host "→ done"\r\n', author: 'user' });
+    if (r.status !== 'created') throw new Error('expected created');
+    expect(r.version.encoding).toBe(expected);
+    expect(new TextDecoder().decode(encodeForDownload(r.version))).toContain('→ done');
+    const [v1] = await versionsOf(s.id);
+    expect(v1!.encoding).toBe('windows-1252');
+    const [act] = await sql`select meta from activity_log where entity_id = ${s.id} and action = 'script.version.create'`;
+    expect(act!.meta).toMatchObject({ encodingChangedFrom: 'windows-1252', encoding: expected });
   });
 });
 

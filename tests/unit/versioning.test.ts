@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeText } from '@/server/files/encoding';
 import { contentDisposition, encodeForDownload, normalizeForLineEnding } from '@/features/library/versioning';
 import { lineDiffStats } from '@/features/library/lineDiff';
+import { cp1252Encodable, firstNonCp1252 } from '@/lib/cp1252';
 import {
   diffTab,
   parseDiffResourceId,
@@ -43,7 +44,7 @@ const v = (content: string, encoding: ScriptVersion['encoding']): ScriptVersion 
 });
 
 describe('encodeForDownload', () => {
-  it.each(['utf16le-crlf.ps1', 'utf8-bom.ps1', 'lf.sh'])('round-trips %s byte-for-byte (decode -> store -> download)', (name) => {
+  it.each(['utf16le-crlf.ps1', 'utf8-bom.ps1', 'lf.sh', 'cp1252.ps1'])('round-trips %s byte-for-byte (decode -> store -> download)', (name) => {
     const original = fixture(name);
     expect([...encodeForDownload(versionFrom(original))]).toEqual([...original]);
   });
@@ -63,11 +64,15 @@ describe('encodeForDownload', () => {
     expect([...encodeForDownload(v('a\nb\r\nc\rd', 'utf-8'))]).toEqual([...new TextEncoder().encode('a\nb\r\nc\rd')]);
   });
 
-  it('windows-1252 fallback uploads are re-encoded as UTF-8 (documented, not byte-identical)', () => {
-    const cp1252 = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0d, 0x0a]); // "café\r\n" in windows-1252
-    const decoded = decodeText(cp1252);
-    expect(decoded).toMatchObject({ encoding: 'utf-8', fallback: 'windows-1252', text: 'café\r\n' });
-    expect([...encodeForDownload(versionFrom(cp1252))]).toEqual([0x63, 0x61, 0x66, 0xc3, 0xa9, 0x0d, 0x0a]);
+  it('windows-1252 (ANSI) uploads download byte-identical, including 0x80-0x9F and the 5 undefined bytes', () => {
+    const all = new Uint8Array(256).map((_, i) => i).filter((b) => b !== 0); // every byte value
+    const v1252 = { ...versionFrom(new Uint8Array()), content: new TextDecoder('windows-1252').decode(all), encoding: 'windows-1252' as const };
+    expect([...encodeForDownload(v1252)]).toEqual([...all]);
+    expect([...encodeForDownload(v('\u2013€é\r\n', 'windows-1252'))]).toEqual([0x96, 0x80, 0xe9, 0x0d, 0x0a]);
+  });
+
+  it('refuses to write characters Windows-1252 cannot hold', () => {
+    expect(() => encodeForDownload(v('→', 'windows-1252'))).toThrow(/Windows-1252/);
   });
 });
 
@@ -135,5 +140,14 @@ describe('lineDiffStats', () => {
     const b = Array.from({ length: 500 }, (_, i) => `b${i}`).join('\n');
     expect(lineDiffStats(a, b, 10)).toEqual({ added: 500, removed: 500, approximate: true });
     expect(lineDiffStats(a, b)).toEqual({ added: 500, removed: 500, approximate: false });
+  });
+});
+
+describe('cp1252 helpers', () => {
+  it('knows which text Windows-1252 can store', () => {
+    expect(cp1252Encodable('Remove-Item \u2013Force # café €')).toBe(true);
+    expect(cp1252Encodable('arrow → here')).toBe(false);
+    expect(firstNonCp1252('arrow → here')).toBe('→');
+    expect(firstNonCp1252('fine é')).toBeNull();
   });
 });

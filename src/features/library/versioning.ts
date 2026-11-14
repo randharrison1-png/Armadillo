@@ -3,9 +3,10 @@ import { logActivity } from '@/server/activity';
 import { requireUser } from '@/server/auth';
 import { withUser, type Tx } from '@/server/db/withUser';
 import { lineEndingOf } from '@/server/files/encoding';
+import { cp1252Encodable, encodeCp1252 } from '@/lib/cp1252';
 import { MAX_TEXT_BYTES } from '@/server/files/limits';
 import type { LineEnding, ScriptAuthor } from '@/server/db/types';
-import type { Script, ScriptVersion } from '@/lib/types';
+import type { Script, ScriptVersion, TextEncoding } from '@/lib/types';
 import { updateScriptSchema, type UpdateScriptInput } from './schema';
 import { defaultFormat, languageFor } from './scriptMeta';
 import { insertScriptWithV1, sha256Hex } from './service';
@@ -65,31 +66,34 @@ export function normalizeForLineEnding(content: string, lineEnding: LineEnding):
   return lineEnding === 'mixed' ? content : content.replace(/\r\n|\r|\n/g, EOL[lineEnding]);
 }
 
-const bom = { 'utf-8': [], 'utf-8-bom': [0xef, 0xbb, 0xbf], 'utf-16le': [0xff, 0xfe], 'utf-16be': [0xfe, 0xff] } as const;
+const bom = { 'utf-16le': [0xff, 0xfe], 'utf-16be': [0xfe, 0xff] } as const;
 
 /**
  * The bytes of a version as a file: its content in its recorded `encoding`, BOM included
- * (utf-8: none; utf-8-bom: EF BB BF; utf-16le: FF FE; utf-16be: FE FF). Newlines are NOT converted —
- * the stored string already has the version's line ending (CRLF for new .ps1/.bat/.cmd files).
+ * (utf-8: none; utf-8-bom: EF BB BF; utf-16le: FF FE; utf-16be: FE FF; windows-1252: one byte per
+ * character, no BOM). Newlines are NOT converted — the stored string already has the version's line
+ * ending (CRLF for new .ps1/.bat/.cmd files).
  *
  * Fidelity: for an upload, content/encoding came from decodeText, so this reproduces the uploaded
- * bytes exactly for UTF-8 (with or without BOM) and BOM-marked UTF-16. Two documented exceptions:
- * a windows-1252 fallback upload was stored as text with encoding 'utf-8', so it downloads as UTF-8
- * (non-ASCII characters change bytes); BOM-less UTF-16 downloads with a BOM (TextEncoding has no
- * "UTF-16 without BOM" value). Both are visible on the version as their encoding label.
+ * bytes exactly for UTF-8 (with or without BOM), BOM-marked UTF-16 and ANSI (Windows-1252). One
+ * documented exception: BOM-less UTF-16 downloads with a BOM (TextEncoding has no "UTF-16 without
+ * BOM" value). A windows-1252 version only ever holds text that encoding can store (saves that add
+ * other characters switch the new version to UTF-8, see saveScriptVersionFor), so encodeCp1252 never
+ * throws for stored versions.
  */
 export function encodeForDownload(v: Pick<ScriptVersion, 'content' | 'encoding'>): Uint8Array<ArrayBuffer> {
-  const prefix = bom[v.encoding];
+  if (v.encoding === 'windows-1252') return encodeCp1252(v.content);
   if (v.encoding === 'utf-8' || v.encoding === 'utf-8-bom') {
     const body = new TextEncoder().encode(v.content);
-    const out = new Uint8Array(prefix.length + body.length);
-    out.set(prefix, 0);
-    out.set(body, prefix.length);
+    if (v.encoding === 'utf-8') return body;
+    const out = new Uint8Array(3 + body.length);
+    out.set([0xef, 0xbb, 0xbf], 0);
+    out.set(body, 3);
     return out;
   }
   const le = v.encoding === 'utf-16le';
   const out = new Uint8Array(2 + v.content.length * 2);
-  out.set(prefix, 0);
+  out.set(bom[v.encoding], 0);
   const view = new DataView(out.buffer);
   for (let i = 0; i < v.content.length; i++) view.setUint16(2 + i * 2, v.content.charCodeAt(i), le);
   return out;
@@ -142,7 +146,7 @@ async function insertNext(tx: Tx, script: Script, base: ScriptVersion | null, v:
     entityType: 'script',
     entityId: script.id,
     ...(script.session_id ? { sessionId: script.session_id } : {}),
-    meta: { versionId: inserted!.id, versionNo: inserted!.version_no, baseVersionId: base?.id ?? null, author: v.author, ...meta },
+    meta: { versionId: inserted!.id, versionNo: inserted!.version_no, baseVersionId: base?.id ?? null, author: v.author, encoding: v.encoding, ...meta },
   });
   return inserted!;
 }
@@ -153,7 +157,7 @@ async function insertNext(tx: Tx, script: Script, base: ScriptVersion | null, v:
  *  - baseVersionId ≠ the script's current version → `conflict` with the latest version; nothing is written.
  *  - same sha256 as the current version (after newline normalization) → `unchanged`; nothing is written.
  *  - otherwise version max+1 with base_version_id = base, encoding / language inherited from the
- *    base, newlines normalized to the base's line ending (a 'mixed' base keeps the text as given and
+ *    base (except a windows-1252 base whose new text does not fit: UTF-8, see below), newlines normalized to the base's line ending (a 'mixed' base keeps the text as given and
  *    records the ending it actually has), current_version_id moved, activity logged.
  * A user may version a universal script explicitly (history stays recoverable); Claude may not —
  * Claude's edits go to a session fork (forkToSession).
@@ -169,21 +173,27 @@ export function saveScriptVersionFor(userId: string, input: SaveInput): Promise<
       if (current) return { status: 'conflict', latest: current };
       throw new NotFoundError('Version');
     }
-    const fallback = defaultFormat(script.filename);
-    const lineEnding0 = current?.line_ending ?? fallback.lineEnding;
+    const defaults = defaultFormat(script.filename);
+    const lineEnding0 = current?.line_ending ?? defaults.lineEnding;
     const content = normalizeForLineEnding(input.content, lineEnding0);
     if (tooLarge(content)) throw new ContentTooLargeError();
     const sha256 = sha256Hex(content);
     if (current && current.sha256 === sha256) return { status: 'unchanged', version: current };
+    // An ANSI file that gains characters Windows-1252 cannot store (→, emoji, CJK, …) is written as
+    // UTF-8 from this version on — BOM for .ps1 so Windows PowerShell 5.1 reads it as UTF-8, none for
+    // .bat/.cmd (cmd.exe would run the BOM as part of the first command) — instead of losing text.
+    let encoding: TextEncoding = current?.encoding ?? defaults.encoding;
+    const encodingChangedFrom = encoding === 'windows-1252' && !cp1252Encodable(content) ? encoding : null;
+    if (encodingChangedFrom) encoding = defaults.encoding;
     const version = await insertNext(tx, script, current, {
       content,
       sha256,
-      encoding: current?.encoding ?? fallback.encoding,
+      encoding,
       line_ending: lineEnding0 === 'mixed' ? lineEndingOf(content) : lineEnding0,
       language: current?.language ?? languageFor(script.filename),
       author: input.author,
       change_note: input.changeNote?.trim() || null,
-    }, 'script.version.create');
+    }, 'script.version.create', encodingChangedFrom ? { encodingChangedFrom } : {});
     return { status: 'created', version };
   });
 }

@@ -80,7 +80,7 @@ const ENUMS: Record<string, Record<string, true>> = {
   script_category: { windows: t, windows_server: t, linux: t, leads_audit: t } satisfies Record<ScriptCategory, true>,
   script_function: { universal_hardening: t, leads_audit: t, session_generated: t } satisfies Record<ScriptFunction, true>,
   script_language: { powershell: t, bash: t, batch: t, text: t, markdown: t } satisfies Record<ScriptLanguage, true>,
-  text_encoding: { 'utf-8': t, 'utf-8-bom': t, 'utf-16le': t, 'utf-16be': t } satisfies Record<TextEncoding, true>,
+  text_encoding: { 'utf-8': t, 'utf-8-bom': t, 'utf-16le': t, 'utf-16be': t, 'windows-1252': t } satisfies Record<TextEncoding, true>,
   step_key: {
     open_readme: t, forensic_questions: t, claude_adaptation: t, run_hardening: t, run_leads: t, inspect_leads: t,
     run_remediation: t, check_points: t, submit_final: t,

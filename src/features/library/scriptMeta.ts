@@ -62,6 +62,7 @@ export const ENCODING_LABEL: Record<TextEncoding, string> = {
   'utf-8-bom': 'UTF-8 with BOM',
   'utf-16le': 'UTF-16 LE',
   'utf-16be': 'UTF-16 BE',
+  'windows-1252': 'Windows-1252 (ANSI)',
 };
 
 export const LINE_ENDING_LABEL: Record<TextFormat['lineEnding'], string> = { crlf: 'CRLF', lf: 'LF', mixed: 'Mixed line endings' };

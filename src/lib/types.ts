@@ -4,7 +4,7 @@ export type OsType = 'windows' | 'windows_server' | 'linux';
 export type ScriptCategory = 'windows' | 'windows_server' | 'linux' | 'leads_audit';
 export type ScriptFunction = 'universal_hardening' | 'leads_audit' | 'session_generated';
 export type ScriptLanguage = 'powershell' | 'bash' | 'batch' | 'text' | 'markdown';
-export type TextEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be';
+export type TextEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be' | 'windows-1252';
 
 export type StepKey =
   | 'open_readme' | 'forensic_questions' | 'claude_adaptation' | 'run_hardening'

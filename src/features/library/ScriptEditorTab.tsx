@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, Download, FileQuestion, GitBranch, GitCompare, Info, Save } from 'lucide-react';
@@ -21,7 +21,8 @@ import { OS_LABEL } from '@/features/sessions/schema';
 import { useScriptEditorExtras } from './editorContext';
 import { CATEGORY_LABEL } from './filters';
 import { ScriptDetailsDialog } from './ScriptDetailsDialog';
-import { formatLabel } from './scriptMeta';
+import { firstNonCp1252 } from '@/lib/cp1252';
+import { defaultFormat, ENCODING_LABEL, formatLabel } from './scriptMeta';
 import { diffTab, downloadHref, parseScriptResourceId, scriptTab, versionViewTab } from './scriptTabs';
 import { forkToSessionAction, loadScriptEditor, loadVersion, restoreVersionAction, saveScriptVersionAction } from './versionActions';
 import type { ScriptEditorData, VersionSummary } from './versionTypes';
@@ -74,10 +75,25 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
   const noteId = useId();
 
   const key = draftKey(namespace, tabKey);
-  const draft = useDrafts((s) => s.drafts[key]);
+  const storedDraft = useDrafts((s) => s.drafts[key]);
   const putDraft = useDrafts((s) => s.put);
   const clearDraft = useDrafts((s) => s.clear);
+  /*
+   * Drafts outlive this component (tab switches, in-app navigation), so one can be based on an
+   * older version than the one just loaded. A CLEAN stale draft is ignored (and replaced once the
+   * editor mounts), so the editor always shows the current version. A DIRTY stale draft keeps the
+   * user's text and raises the conflict banner straight away. Not while a save is in flight: the
+   * draft and the reloaded data are updated one after the other then.
+   */
+  const stale = !!storedDraft && !!data && storedDraft.baseVersionId !== data.current.id && !saving;
+  const draft = stale && !isDirty(storedDraft) ? undefined : storedDraft;
   const dirty = isDirty(draft);
+  const currentEncoding = data?.current.encoding;
+  const draftText = draft?.content;
+  const unencodable = useMemo(
+    () => (currentEncoding === 'windows-1252' && draftText !== undefined ? firstNonCp1252(draftText) : null),
+    [currentEncoding, draftText],
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -122,6 +138,7 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
   if (!data) return <LoadingState label="Loading script" />;
 
   const { script, current, versions, readOnly } = data;
+  const shownConflict = conflict ?? (stale && dirty ? current : null);
   const latestNo = versions[0]?.version_no ?? current.version_no;
   const baseNo = versions.find((v) => v.id === (draft?.baseVersionId ?? current.id))?.version_no;
   const openTab = (t: TabDescriptor) => getWorkspaceStore(namespace).getState().openTab(t);
@@ -146,14 +163,16 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
       }
       const v = res.version;
       setNote('');
-      const fresh = await reload();
-      if (v.content === content && v.line_ending === current.line_ending) {
-        putDraft(key, { baseVersionId: v.id, pristine: content, content: typed });
-      } else {
-        // The server normalized the text (or a mixed file got one line ending): show what was stored.
-        if (fresh) resetEditor();
-      }
-      toast.success(`Saved v${v.version_no}`);
+      const fresh = await loadScriptEditor(script.id).catch(() => null);
+      // Update draft and data in one synchronous step so they never disagree about the base version.
+      const keepsText = v.content === content && v.line_ending === current.line_ending;
+      if (keepsText) putDraft(key, { baseVersionId: v.id, pristine: content, content: useDrafts.getState().drafts[key]?.content ?? typed });
+      if (fresh) setData(fresh);
+      // The server normalized the text (or a mixed file got one line ending): show what was stored.
+      if (!keepsText && fresh) resetEditor();
+      if (v.encoding !== current.encoding) {
+        toast.success(`Saved v${v.version_no} as ${ENCODING_LABEL[v.encoding]}: the text no longer fits ${ENCODING_LABEL[current.encoding]}.`);
+      } else toast.success(`Saved v${v.version_no}`);
     } catch {
       toast.error('Could not save the version. Try again.');
     } finally {
@@ -216,26 +235,36 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
             </div>
           </div>
 
-          {conflict ? (
+          {shownConflict ? (
             <div role="alert" className="flex shrink-0 flex-col gap-2 border-b border-border bg-surface px-4 py-2">
               <p className="flex items-center gap-2 text-small text-text">
                 <AlertTriangle aria-hidden className="size-4 shrink-0 text-warning" />
-                v{conflict.version_no} was saved after you opened this{baseNo ? ` (you started from v${baseNo})` : ''}. Nothing was overwritten
+                v{shownConflict.version_no} was saved after you opened this{baseNo ? ` (you started from v${baseNo})` : ''}. Nothing was overwritten
                 and your edits are still here.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => setConfirm({ kind: 'saveOnLatest', latest: conflict })}>Save as new version based on v{conflict.version_no}</Button>
-                <Button variant="secondary" onClick={() => setConfirm({ kind: 'openLatest', latest: conflict })}>
+                <Button onClick={() => setConfirm({ kind: 'saveOnLatest', latest: shownConflict })}>
+                  Save as new version based on v{shownConflict.version_no}
+                </Button>
+                <Button variant="secondary" onClick={() => setConfirm({ kind: 'openLatest', latest: shownConflict })}>
                   Open latest
                 </Button>
                 {baseNo && draft?.baseVersionId ? (
-                  <Button variant="ghost" onClick={() => compare({ id: draft.baseVersionId!, version_no: baseNo }, conflict)}>
+                  <Button variant="ghost" onClick={() => compare({ id: draft.baseVersionId!, version_no: baseNo }, shownConflict)}>
                     <GitCompare aria-hidden className="size-4" />
-                    Compare v{baseNo} and v{conflict.version_no}
+                    Compare v{baseNo} and v{shownConflict.version_no}
                   </Button>
                 ) : null}
               </div>
             </div>
+          ) : null}
+
+          {unencodable && !readOnly ? (
+            <p role="note" className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-small text-text">
+              <AlertTriangle aria-hidden className="size-4 shrink-0 text-warning" />
+              {ENCODING_LABEL['windows-1252']} cannot store “{unencodable}”, so saving writes the new version as{' '}
+              {ENCODING_LABEL[defaultFormat(script.filename).encoding]}. Earlier versions keep their encoding.
+            </p>
           ) : null}
 
           {current.line_ending === 'mixed' ? (
@@ -255,7 +284,9 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
               readOnly={readOnly}
               ariaLabel={`${script.filename} editor`}
               onReady={(value) => {
-                if (!useDrafts.getState().drafts[key]) putDraft(key, { baseVersionId: current.id, pristine: value, content: value });
+                const d = useDrafts.getState().drafts[key];
+                // No draft yet, or a clean one left over from an older version: start from what the editor shows.
+                if (!d || (d.baseVersionId !== current.id && !isDirty(d))) putDraft(key, { baseVersionId: current.id, pristine: value, content: value });
               }}
               onChange={(value) => {
                 const d = useDrafts.getState().drafts[key];

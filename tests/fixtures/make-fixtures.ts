@@ -24,6 +24,9 @@ const utf16le = (s: string) => {
 out('utf16le-crlf.ps1', utf16le("Write-Host 'hello'\r\nGet-Date\r\n"));
 out('utf8-bom.ps1', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("Write-Host 'café'\r\n", 'utf8')]));
 out('lf.sh', '#!/bin/bash\necho hardening\nexit 0\n');
+// ANSI (Windows-1252) PowerShell as Notepad / Windows PowerShell 5.1 save it: no BOM, CRLF,
+// en dash 0x96 (the classic copy-pasted "–Force") and é 0xE9. Invalid UTF-8 by construction.
+out('cp1252.ps1', Buffer.from("Remove-Item C:\\Temp\\old \x96Force # caf\xe9\r\nWrite-Host 'done'\r\n", 'latin1'));
 out(
   'readme.md',
   [

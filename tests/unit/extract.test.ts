@@ -27,6 +27,14 @@ describe('decodeText', () => {
     expect(r).toMatchObject({ encoding: 'utf-16be', text: 'hi\n', lineEnding: 'lf' });
   });
 
+  it('decodes an ANSI (Windows-1252) .ps1 with en dash and é', () => {
+    expect(decodeText(fx('cp1252.ps1'))).toMatchObject({
+      encoding: 'windows-1252',
+      lineEnding: 'crlf',
+      text: "Remove-Item C:\\Temp\\old \u2013Force # café\r\nWrite-Host 'done'\r\n",
+    });
+  });
+
   it('reports mixed and newline-free line endings', () => {
     expect(decodeText(new TextEncoder().encode('a\r\nb\nc')).lineEnding).toBe('mixed');
     expect(decodeText(new TextEncoder().encode('single line')).lineEnding).toBe('lf');
@@ -38,8 +46,8 @@ describe('decodeText', () => {
     const be = decodeText(new Uint8Array([0, 0x68, 0, 0x69]));
     expect(be).toMatchObject({ encoding: 'utf-16be', text: 'hi' });
     const cp = decodeText(new Uint8Array([0x63, 0x61, 0x66, 0xe9])); // "café" in windows-1252, invalid UTF-8
-    expect(cp.text).toBe('café');
-    expect(cp.fallback).toBe('windows-1252');
+    expect(cp).toMatchObject({ text: 'café', encoding: 'windows-1252' });
+    expect(cp).not.toHaveProperty('fallback');
   });
 });
 
