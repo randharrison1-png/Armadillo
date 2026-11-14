@@ -2,8 +2,8 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { logActivity } from '@/server/activity';
 import { withUser, type Tx } from '@/server/db/withUser';
-import type { Script, ScriptVersion } from '@/lib/types';
-import { filterScripts, type LibraryQuery } from './filters';
+import type { Script, ScriptCategory, ScriptVersion } from '@/lib/types';
+import type { LibraryQuery } from './filters';
 import { createScriptSchema, NAME_MAX, type CreateScriptInput } from './schema';
 import { defaultFormat, languageFor, type TextFormat } from './scriptMeta';
 
@@ -18,27 +18,56 @@ const eol = { crlf: '\r\n', lf: '\n', mixed: '\n' } as const;
 /** Escapes LIKE wildcards so user text is matched literally (backslash is ILIKE's default escape). */
 const likePattern = (term: string) => `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
+/** Most rows the table shows; the page tells the user when a result was cut off. */
+export const LIBRARY_LIMIT = 200;
+
 /**
- * The user's non-archived scripts, newest first. Text search is case-insensitive substring match on
- * name, filename, description and the CURRENT version's content; every whitespace-separated term
- * must match somewhere (uses the trigram index from 0004). Category / function / scope filtering is
- * the pure filterScripts, so the sidebar counts and the table share one definition.
+ * The search query as a composable fragment (exported so tests can EXPLAIN it). Every
+ * whitespace-separated term must match, case-insensitively, name, filename, description or the
+ * CURRENT version's content. Each term is `s.id in (metadata matches UNION content matches)`: the
+ * content branch is a plain `ilike` on script_versions.content, so it can use the trigram GIN
+ * index (an OR across the two tables could not). Category/function/scope are plain WHERE clauses.
  */
-export function searchScriptsFor(userId: string, q: LibraryQuery): Promise<ScriptListItem[]> {
+export function searchQuery(tx: Tx, q: LibraryQuery, limit = LIBRARY_LIMIT) {
   const terms = (q.text ?? '').split(/\s+/).filter(Boolean);
+  const termMatch = (t: string) => {
+    const p = likePattern(t);
+    return tx`s.id in (
+      select m.id from public.scripts m
+        where m.name ilike ${p} or m.filename ilike ${p} or m.description ilike ${p}
+      union
+      select c.id from public.scripts c
+        join public.script_versions v on v.id = c.current_version_id
+        where v.content ilike ${p})`;
+  };
+  const scope = q.scope ?? 'universal';
+  let where = tx`s.archived_at is null`;
+  if (scope === 'universal') where = tx`${where} and s.session_id is null`;
+  else if (scope === 'session') where = tx`${where} and s.session_id is not null`;
+  if (q.category) where = tx`${where} and s.category = ${q.category}::public.script_category`;
+  if (q.fn) where = tx`${where} and s.function = ${q.fn}::public.script_function`;
+  where = terms.reduce((acc, t) => tx`${acc} and ${termMatch(t)}`, where);
+  return tx`
+    select s.*, v.version_no as current_version_no
+    from public.scripts s
+    left join public.script_versions v on v.id = s.current_version_id
+    where ${where}
+    order by s.updated_at desc, s.created_at desc, s.id
+    limit ${limit}`;
+}
+
+/** The user's non-archived scripts matching `q`, newest first, at most `limit` (default LIBRARY_LIMIT). */
+export function searchScriptsFor(userId: string, q: LibraryQuery, limit = LIBRARY_LIMIT): Promise<ScriptListItem[]> {
+  return withUser(userId, (tx) => searchQuery(tx, q, limit) as unknown as Promise<ScriptListItem[]>);
+}
+
+/** Sidebar numbers: universal, non-archived scripts per category (one grouped query, no row fetch). */
+export function libraryCountsFor(userId: string): Promise<Partial<Record<ScriptCategory, number>>> {
   return withUser(userId, async (tx) => {
-    const termMatch = (t: string) => {
-      const p = likePattern(t);
-      return tx`(s.name ilike ${p} or s.filename ilike ${p} or coalesce(s.description, '') ilike ${p} or v.content ilike ${p})`;
-    };
-    const where = terms.reduce((acc, t) => tx`${acc} and ${termMatch(t)}`, tx`s.archived_at is null`);
-    const rows = await tx<ScriptListItem[]>`
-      select s.*, v.version_no as current_version_no
-      from public.scripts s
-      left join public.script_versions v on v.id = s.current_version_id
-      where ${where}
-      order by s.updated_at desc, s.created_at desc, s.id`;
-    return filterScripts(rows, q);
+    const rows = await tx<{ category: ScriptCategory; n: number }[]>`
+      select category, count(*)::int as n from public.scripts
+      where session_id is null and archived_at is null group by category`;
+    return Object.fromEntries(rows.map((r) => [r.category, r.n]));
   });
 }
 

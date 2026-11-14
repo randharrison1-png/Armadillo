@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { listRecentSessions } from '@/features/sessions/queries';
 import { hasActiveFilters, type LibraryQuery } from './filters';
 import { LibraryFilters } from './LibraryFilters';
-import { searchScripts } from './queries';
+import { LIBRARY_LIMIT, searchScripts } from './queries';
 import { CreateScriptDialog, UploadScriptDialog } from './ScriptDialogs';
 import { ScriptTable } from './ScriptTable';
 
@@ -56,7 +56,14 @@ export async function LibraryPage({ query }: { query: LibraryQuery }) {
               }
             />
           ) : (
-            <ScriptTable scripts={scripts} sessions={targets} />
+            <>
+              <ScriptTable scripts={scripts} sessions={targets} />
+              {scripts.length >= LIBRARY_LIMIT ? (
+                <p role="status" className="text-small text-muted">
+                  Showing the first {LIBRARY_LIMIT} scripts. Search or filter to narrow the list.
+                </p>
+              ) : null}
+            </>
           )}
         </>
       )}

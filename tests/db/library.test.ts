@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asUser, createTestUser, sql } from './helpers';
 import { testDatabaseUrl } from './env';
 import { closePool } from '@/server/db/pool';
-import { createScriptFor, duplicateScriptFor, getScriptWithContentFor, searchScriptsFor } from '@/features/library/service';
+import { createScriptFor, duplicateScriptFor, getScriptWithContentFor, libraryCountsFor, searchQuery, searchScriptsFor } from '@/features/library/service';
 
 beforeAll(() => {
   process.env.DATABASE_URL ??= testDatabaseUrl();
@@ -163,5 +163,49 @@ describe('search index', () => {
   it('has a trigram index on script_versions.content', async () => {
     const [r] = await sql`select indexdef from pg_indexes where tablename = 'script_versions' and indexdef ilike '%gin_trgm_ops%'`;
     expect(r.indexdef).toContain('content');
+  });
+});
+
+describe('libraryCountsFor', () => {
+  it('counts universal, non-archived scripts per category with one grouped query', async () => {
+    const u = await createTestUser();
+    const other = await createTestUser();
+    await createScriptFor(u.id, { ...base, name: 'w1', filename: 'a.ps1', content: 'x' });
+    await createScriptFor(u.id, { ...base, name: 'w2', filename: 'b.ps1', content: 'x' });
+    const gone = await createScriptFor(u.id, { ...base, name: 'w3', filename: 'c.ps1', content: 'x' });
+    await createScriptFor(u.id, { ...base, category: 'linux', osCompat: ['linux'], name: 'l1', filename: 'l.sh', content: 'x' });
+    await createScriptFor(other.id, { ...base, name: 'theirs', filename: 't.ps1', content: 'x' });
+    await sql`update scripts set archived_at = now() where id = ${gone.id}`;
+    const [sess] = await sql`insert into sessions (owner_id, title, os) values (${u.id}, 'S', 'windows') returning id`;
+    await sql`insert into scripts (owner_id, name, filename, category, function, os_compat, session_id)
+      values (${u.id}, 'Sess', 's.ps1', 'windows', 'session_generated', '{windows}', ${sess.id})`;
+    expect(await libraryCountsFor(u.id)).toEqual({ windows: 2, linux: 1 });
+    expect(await libraryCountsFor(other.id)).toEqual({ windows: 1 });
+  });
+});
+
+describe('search limit and index eligibility', () => {
+  it('limits rows, newest first', async () => {
+    const u = await createTestUser();
+    for (const n of ['a', 'b', 'c']) await createScriptFor(u.id, { ...base, name: n, filename: `${n}.ps1`, content: n });
+    expect((await searchScriptsFor(u.id, {}, 2)).map((s) => s.name)).toEqual(['c', 'b']);
+  });
+
+  it('content and metadata predicates can use the trigram indexes', async () => {
+    const u = await createTestUser();
+    for (let i = 0; i < 30; i++) await createScriptFor(u.id, { ...base, name: `bulk ${i}`, filename: `b${i}.ps1`, content: `Write-Host ${i}` });
+    // Admin transaction (no RLS owner filter) so the plan reflects index eligibility of the ILIKE predicates.
+    const plan = await sql.begin(async (tx) => {
+      await tx`analyze public.scripts`;
+      await tx`analyze public.script_versions`;
+      await tx`set local enable_seqscan = off`;
+      await tx`set local enable_indexscan = off`; // leave only bitmap scans, i.e. the trigram GIN indexes, on tiny tables
+      const rows = await tx`explain ${searchQuery(tx, { text: 'Set-NetFirewallProfile' })}`;
+      return rows.map((r) => r['QUERY PLAN'] as string).join('\n');
+    });
+    expect(plan).toContain('script_versions_content_trgm_idx');
+    expect(plan).toContain('scripts_name_trgm_idx');
+    expect(plan).toContain('scripts_filename_trgm_idx');
+    expect(plan).toContain('scripts_description_trgm_idx');
   });
 });

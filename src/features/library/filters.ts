@@ -50,7 +50,7 @@ export function hasActiveFilters(q: LibraryQuery): boolean {
 
 type Filterable = Pick<Script, 'session_id' | 'category' | 'function'>;
 
-/** Category / function / scope filtering (the text search and archive exclusion happen in SQL). */
+/** In-memory mirror of the SQL category/function/scope predicates in service.searchQuery (reference spec, unit-tested; production filters in SQL). */
 export function filterScripts<T extends Filterable>(rows: readonly T[], q: LibraryQuery): T[] {
   const scope = q.scope ?? 'universal';
   return rows.filter(

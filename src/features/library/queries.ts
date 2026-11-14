@@ -1,10 +1,10 @@
 import 'server-only';
 import { requireUser } from '@/server/auth';
 import type { Script, ScriptVersion } from '@/lib/types';
-import { countByCategory, type LibraryQuery } from './filters';
-import { getScriptWithContentFor, searchScriptsFor, type ScriptListItem } from './service';
+import type { LibraryQuery } from './filters';
+import { getScriptWithContentFor, libraryCountsFor, searchScriptsFor, type ScriptListItem } from './service';
 
-export type { ScriptListItem } from './service';
+export { LIBRARY_LIMIT, type ScriptListItem } from './service';
 
 /** The signed-in user's scripts matching `q` (non-archived; universal scope unless `q.scope` says otherwise). */
 export async function searchScripts(q: LibraryQuery = {}): Promise<ScriptListItem[]> {
@@ -12,9 +12,10 @@ export async function searchScripts(q: LibraryQuery = {}): Promise<ScriptListIte
   return searchScriptsFor(user.id, q);
 }
 
-/** Sidebar numbers: universal, non-archived scripts per category, from the same query as the table. */
+/** Sidebar numbers: universal, non-archived scripts per category (grouped count, same predicate as the default table). */
 export async function getLibraryCounts() {
-  return countByCategory(await searchScripts({ scope: 'universal' }));
+  const user = await requireUser();
+  return libraryCountsFor(user.id);
 }
 
 export async function getScriptWithContent(scriptId: string): Promise<{ script: Script; version: ScriptVersion } | null> {
