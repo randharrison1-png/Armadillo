@@ -86,6 +86,29 @@ describe('MessageList', () => {
   });
 });
 
+describe('MessageList context notices', () => {
+  it('names each trimmed item "trimmed to fit" and offers no Retry for a forbidden selection', () => {
+    const labels = new Map([['readme:a1', 'README · pasted']]);
+    const { rerender } = render(
+      <MessageList
+        busy={false}
+        readOnly={false}
+        labels={labels}
+        onRetry={() => {}}
+        messages={[msg({ id: 'a', role: 'assistant', content: 'ok', status: 'complete', trimmed: [{ type: 'readme', id: 'a1' }, { type: 'leads_report', id: 'zz' }] })]}
+      />,
+    );
+    const list = screen.getByRole('list', { name: 'Trimmed context' });
+    expect(list).toHaveTextContent('README · pasted trimmed to fit');
+    expect(list).toHaveTextContent('LEADS report trimmed to fit');
+    rerender(
+      <MessageList busy={false} readOnly={false} labels={labels} onRetry={() => {}} messages={[msg({ id: 'a', role: 'assistant', content: '', status: 'error', errorCode: 'forbidden' })]} />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent("One of the selected items isn't available in this session.");
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
+
 describe('Composer', () => {
   it('Enter sends, Shift+Enter adds a newline, and it is disabled while streaming', async () => {
     const user = userEvent.setup();

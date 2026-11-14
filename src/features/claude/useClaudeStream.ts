@@ -107,7 +107,8 @@ export function useClaudeStream(opts: {
             patchReply(requestId, (m) => ({ ...m, content: m.content + d.text }));
           } else if (event === 'done') {
             settled = true;
-            patchReply(requestId, (m) => ({ ...m, status: 'complete', errorCode: undefined, errorMessage: undefined, stopped: undefined }));
+            const d = data as ClaudeStreamEvents['done'];
+            patchReply(requestId, (m) => ({ ...m, status: 'complete', errorCode: undefined, errorMessage: undefined, stopped: undefined, trimmed: d.trimmed?.length ? d.trimmed : undefined }));
           } else if (event === 'error') {
             const d = data as ClaudeStreamEvents['error'];
             if (d.code === 'stopped') {

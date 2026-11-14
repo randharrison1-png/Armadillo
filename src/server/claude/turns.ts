@@ -52,7 +52,14 @@ export type TurnInput = {
 };
 
 type Ids = { conversationId: string; userMessageId: string; assistantMessageId: string };
-export type Usage = { input_tokens: number; output_tokens: number };
+export type Usage = { input_tokens: number; output_tokens: number; trimmed?: ResourceRef[] };
+
+/** The refs that were shortened to fit, as stored on a finished reply's usage. */
+export const trimmedOf = (usage: Usage | null | undefined): ResourceRef[] => (Array.isArray(usage?.trimmed) ? usage.trimmed : []);
+
+/** Token counts only (the stored usage also carries `trimmed`). */
+export const tokenUsageOf = (usage: Usage | null): { input_tokens: number; output_tokens: number } | null =>
+  usage ? { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens } : null;
 
 export type PreparedTurn =
   | (Ids & { kind: 'replay'; content: string; usage: Usage | null; model: string | null })
@@ -222,12 +229,13 @@ export class ReplyWriter {
   }
 
   /** Marks the reply complete. False when it was stopped/superseded meanwhile (nothing written). */
-  complete(content: string, usage: Usage, model: string): Promise<boolean> {
+  complete(content: string, usage: Usage, model: string, trimmed: ResourceRef[] = []): Promise<boolean> {
+    const stored = trimmed.length ? { ...usage, trimmed } : usage;
     return this.queue(() =>
       withUser(this.userId, async (tx) => {
         const rows = await tx`
           update public.messages
-          set status = 'complete', content = ${content}, model = ${model}, usage = ${tx.json(usage)}
+          set status = 'complete', content = ${content}, model = ${model}, usage = ${tx.json(stored)}
           where id = ${this.messageId} and status = 'streaming' and usage ->> 'attempt' = ${this.attempt}
           returning id`;
         return rows.length > 0;

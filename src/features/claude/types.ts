@@ -21,6 +21,8 @@ export type ChatMessage = {
   errorCode?: string;
   /** User-facing failure text (only known in the browser right after a failure). */
   errorMessage?: string;
+  /** Selected items that were shortened to fit Claude's context limit for this reply. */
+  trimmed?: ResourceRef[];
   /** The browser has not yet received this message's server id. */
   local?: boolean;
 };
@@ -62,6 +64,6 @@ export type ClaudeStreamEvents = {
   /** First event: ids of the turn (the conversation is created with the first message). `replay`: an earlier result is being resent. */
   start: { conversationId: string; userMessageId: string; assistantMessageId: string; replay: boolean };
   delta: { text: string };
-  done: { messageId: string; conversationId: string; usage: TokenUsage | null; model: string | null };
+  done: { messageId: string; conversationId: string; usage: TokenUsage | null; model: string | null; trimmed?: ResourceRef[] };
   error: { message: string; retryable: boolean; code: string; messageId?: string };
 };

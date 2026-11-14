@@ -67,6 +67,7 @@ export function getConversationFor(userId: string, conversationId: string): Prom
         requestId,
         createdAt: r.created_at.toISOString(),
         ...(usage.stopped === true ? { stopped: true } : {}),
+        ...(Array.isArray(usage.trimmed) && usage.trimmed.length ? { trimmed: usage.trimmed as ResourceRef[] } : {}),
         ...(status === 'error' ? { errorCode: r.stale ? 'interrupted' : typeof usage.error === 'string' ? usage.error : 'error' } : {}),
       };
     });
@@ -83,7 +84,7 @@ const EVIDENCE_KIND_LABEL: Record<EvidenceKind, string> = {
 
 /**
  * What the context picker can offer for a session: its READMEs, the current versions of its own
- * scripts plus any (e.g. universal library) script versions already in `selected`, its LEADS
+ * scripts plus any universal-library script versions already in `selected` (a version of another session's script is never offered), its LEADS
  * reports and its evidence. Null if the session is not the user's. Labels only — no content.
  */
 export function getContextOptionsFor(userId: string, sessionId: string, selected: readonly ResourceRef[]): Promise<ContextOptions | null> {
@@ -98,7 +99,7 @@ export function getContextOptionsFor(userId: string, sessionId: string, selected
       select v.id, v.version_no, s.name, s.session_id
       from public.script_versions v join public.scripts s on s.id = v.script_id
       where (s.session_id = ${sessionId} and v.id = s.current_version_id and s.archived_at is null)
-         ${selectedVersions.length ? tx`or v.id in ${tx(selectedVersions)}` : tx``}
+         ${selectedVersions.length ? tx`or (v.id in ${tx(selectedVersions)} and (s.session_id is null or s.session_id = ${sessionId}))` : tx``}
       order by (s.session_id is null), lower(s.name), v.version_no desc`;
     const reports = await tx<{ id: string; filename: string; cycle_no: number; created_at: Date }[]>`
       select id, filename, cycle_no, created_at from public.leads_reports where session_id = ${sessionId} order by created_at desc`;
@@ -113,7 +114,7 @@ export function getContextOptionsFor(userId: string, sessionId: string, selected
       scriptVersions: versions.map((v) => ({
         ref: { type: 'script_version' as const, id: v.id },
         label: `${v.name} · v${v.version_no}`,
-        detail: v.session_id ? 'Session script' : 'Library script',
+        detail: v.session_id === sessionId ? 'Session script' : 'Library script',
       })),
       leadsReports: reports.map((r) => ({
         ref: { type: 'leads_report' as const, id: r.id },

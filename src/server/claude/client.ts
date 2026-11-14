@@ -5,10 +5,10 @@ import type { ResourceRef } from '@/lib/types';
 import type { ConversationMode } from '@/server/db/types';
 import type { ClaudeStreamEvents } from '@/features/claude/types';
 import { KeyEncryptionConfigError } from '@/server/security/crypto';
-import { assembleContext } from './context';
+import { buildContext, ForbiddenError } from './context';
 import type { HistoryMessage } from './history';
 import { ClaudeKeyMissingError, ClaudeKeyUnreadableError, resolveClaudeKeyFor } from './keys';
-import { prepareTurn, readReply, ReplyWriter, TurnError, type PreparedTurn, type Usage } from './turns';
+import { prepareTurn, readReply, ReplyWriter, tokenUsageOf, trimmedOf, TurnError, type PreparedTurn, type Usage } from './turns';
 
 /**
  * The Claude gateway: the only module that imports the Anthropic SDK (server-only).
@@ -31,6 +31,8 @@ import { prepareTurn, readReply, ReplyWriter, TurnError, type PreparedTurn, type
  */
 
 export const DEFAULT_MODEL = 'claude-sonnet-5-5';
+/** Token budget (4 characters per token) for the documents sent with one message. */
+export const DEFAULT_CONTEXT_TOKENS = 60_000;
 const FLUSH_MS = 1000;
 const KEEPALIVE_MS = 15_000;
 const WAIT_POLL_MS = 1000;
@@ -217,6 +219,7 @@ type ClientError = { message: string; retryable: boolean; code: string };
 
 function clientError(e: unknown): ClientError {
   if (e instanceof ClaudeUpstreamError) return { message: e.message, retryable: e.retryable, code: e.code };
+  if (e instanceof ForbiddenError) return { message: e.message, retryable: false, code: 'forbidden' };
   if (e instanceof TurnError) return { message: e.message, retryable: false, code: e.code };
   if (e instanceof ClaudeKeyMissingError || e instanceof ClaudeKeyUnreadableError) return { message: e.message, retryable: true, code: e.code };
   if (e instanceof KeyEncryptionConfigError) {
@@ -239,7 +242,7 @@ async function waitForReply(userId: string, turn: Extract<PreparedTurn, { kind: 
     if (!row) break;
     if (row.status === 'complete') {
       if (row.content) emit('delta', { text: row.content });
-      emit('done', { messageId: turn.assistantMessageId, conversationId: turn.conversationId, usage: row.usage, model: row.model });
+      emit('done', { messageId: turn.assistantMessageId, conversationId: turn.conversationId, usage: tokenUsageOf(row.usage), model: row.model, trimmed: trimmedOf(row.usage) });
       return;
     }
     if (row.status === 'error' || row.stale) break;
@@ -261,7 +264,7 @@ async function runTurn(input: StreamClaudeInput, emit: Emit): Promise<void> {
 
   if (turn.kind === 'replay') {
     if (turn.content) emit('delta', { text: turn.content });
-    emit('done', { messageId: assistantMessageId, conversationId, usage: turn.usage, model: turn.model });
+    emit('done', { messageId: assistantMessageId, conversationId, usage: tokenUsageOf(turn.usage), model: turn.model, trimmed: trimmedOf(turn.usage) });
     return;
   }
   if (turn.kind === 'wait') return waitForReply(input.userId, turn, emit);
@@ -290,7 +293,7 @@ async function runTurn(input: StreamClaudeInput, emit: Emit): Promise<void> {
 
   try {
     const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
-    const ctx = await assembleContext({ userId: input.userId, sessionId: turn.sessionId, refs: turn.refs });
+    const ctx = await buildContext({ userId: input.userId, sessionId: turn.sessionId, refs: turn.refs, budgetTokens: numberEnv('CLAUDE_CONTEXT_TOKENS', DEFAULT_CONTEXT_TOKENS) });
     const gen = streamUpstream({
       apiKey,
       model: resolveModel(profileModel),
@@ -310,8 +313,8 @@ async function runTurn(input: StreamClaudeInput, emit: Emit): Promise<void> {
       emit('delta', { text: next.value.text });
     }
     clearInterval(timer);
-    if (await writer.complete(text, result.usage, result.model)) {
-      emit('done', { messageId: assistantMessageId, conversationId, usage: result.usage, model: result.model });
+    if (await writer.complete(text, result.usage, result.model, ctx.trimmed)) {
+      emit('done', { messageId: assistantMessageId, conversationId, usage: result.usage, model: result.model, trimmed: ctx.trimmed });
     } else {
       // Stopped (or superseded) between the last delta and completion: keep the text, report stopped.
       await writer.fail(text, 'stopped');

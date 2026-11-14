@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, FileText, ListChecks, Paperclip, RotateCcw, ScrollText, Square, Terminal, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, FileText, ListChecks, Paperclip, RotateCcw, Scissors, ScrollText, Square, Terminal, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { ResourceRef } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -24,6 +24,7 @@ const ERROR_TEXT: Record<string, string> = {
   rate_limited: 'Claude was rate-limiting requests and the reply did not finish.',
   interrupted: 'This reply did not finish.',
   auth: 'Claude rejected the API key. Check it in Settings.',
+  forbidden: "One of the selected items isn't available in this session.",
 };
 
 function errorText(m: ChatMessage): string {
@@ -105,6 +106,16 @@ export function MessageList({
             {m.status === 'streaming' && !m.local && !busy ? (
               <p className="text-small text-muted">Claude is still answering. This updates when the reply is saved.</p>
             ) : null}
+            {m.status === 'complete' && m.trimmed?.length ? (
+              <ul aria-label="Trimmed context" className="flex flex-wrap gap-1">
+                {m.trimmed.map((r) => (
+                  <li key={refKey(r)} className="flex items-center gap-1 rounded-sm border border-border bg-bg px-2 text-small text-muted">
+                    <Scissors aria-hidden className="size-3 shrink-0" />
+                    <span>{labels.get(refKey(r)) ?? REF_TYPE_LABEL[r.type]} trimmed to fit</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             {m.status === 'error' ? (
               <div
                 role={m.stopped || m.errorCode === 'stopped' ? 'status' : 'alert'}
@@ -124,7 +135,7 @@ export function MessageList({
                     Open Settings
                   </Link>
                 ) : null}
-                {m.requestId && !readOnly ? (
+                {m.requestId && !readOnly && m.errorCode !== 'forbidden' ? (
                   <Button variant="secondary" className="ml-auto h-control-sm" disabled={busy} onClick={() => onRetry(m.requestId!)}>
                     <RotateCcw aria-hidden className="size-4" />
                     Retry
