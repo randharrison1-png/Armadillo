@@ -34,20 +34,21 @@ const WINDOW_OVERLAP = 512;
 /** Most findings returned (the warning stays readable; the first ones are the lines to fix). */
 export const MAX_FINDINGS = 100;
 
-const PASSWORD_TAIL = String.raw`['"][^'"\r\n]{1,200}['"]`;
+// A quoted literal; values starting with $ are variable references ("$env:PW"), not secrets.
+const PASSWORD_TAIL = String.raw`['"](?!\$)[^'"\r\n]{1,200}['"]`;
 
 const LINE_PATTERNS: ReadonlyArray<{ kind: SecretKind; re: RegExp; also?: RegExp }> = [
   { kind: 'aws_access_key', re: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[A-Z0-9]{16}\b/ },
   { kind: 'private_key_block', re: /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/ },
   { kind: 'github_token', re: /\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b/ },
   { kind: 'anthropic_key', re: /\bsk-ant-[A-Za-z0-9_-]{20,400}/ },
-  // password = "x" / $password = 'x' / PASSWORD="x"
-  { kind: 'password_literal', re: new RegExp(String.raw`\b(?:password|passwd|pwd)[ \t]{0,20}=[ \t]{0,20}${PASSWORD_TAIL}`, 'i') },
+  // password = "x" / $password = 'x' / DB_PASSWORD="x" / $AdminPassword = "x" (bounded name prefix)
+  { kind: 'password_literal', re: new RegExp(String.raw`(?:^|[^A-Za-z0-9])[A-Za-z0-9_$]{0,40}(?:password|passwd|pwd)[ \t]{0,20}=[ \t]{0,20}${PASSWORD_TAIL}`, 'i') },
   // PowerShell: -Password "x"  /  -Password (ConvertTo-SecureString "x" -AsPlainText -Force)
   { kind: 'password_literal', re: new RegExp(String.raw`-password[ \t]{1,20}\(?[ \t]{0,20}${PASSWORD_TAIL}`, 'i') },
-  { kind: 'password_literal', re: new RegExp(String.raw`ConvertTo-SecureString[ \t]{1,20}(?:-String[ \t]{1,20})?${PASSWORD_TAIL}`, 'i'), also: /-AsPlainText/i },
+  { kind: 'password_literal', re: new RegExp(String.raw`ConvertTo-SecureString[ \t]{1,20}(?:-AsPlainText[ \t]{1,20})?(?:-String[ \t]{1,20})?${PASSWORD_TAIL}`, 'i'), also: /-AsPlainText/i },
   // net user <name> <password> [/add]  (at the start of a command)
-  { kind: 'password_literal', re: /(?:^|[;&|(])[ \t]{0,20}@?net1?[ \t]{1,10}user[ \t]{1,10}[^\s/*]{1,64}[ \t]{1,10}[^\s/*][^\s]{0,127}/i },
+  { kind: 'password_literal', re: /(?:^|[;&|(])[ \t]{0,20}(?:cmd(?:\.exe)?[ \t]{1,10}\/[ck][ \t]{1,10})?@?net1?[ \t]{1,10}user[ \t]{1,10}[^\s/*]{1,64}[ \t]{1,10}[^\s/*][^\s]{0,127}/i },
   // echo "user:pass" | chpasswd
   { kind: 'password_literal', re: /\becho[ \t]{1,10}(?:-e[ \t]{1,10})?['"]?[^\s:'"|]{1,64}:[^\s'"|]{1,128}['"]?[ \t]{0,10}\|[ \t]{0,10}(?:sudo[ \t]{1,10})?chpasswd\b/i },
 ];
@@ -101,4 +102,19 @@ export function scanSecrets(content: string): SecretFinding[] {
     }
   }
   return out;
+}
+
+/** The canonical text a fingerprint is computed over: sorted `kind:line` entries, one per line. */
+export const fingerprintInput = (findings: readonly SecretFinding[]): string => findings.map((f) => `${f.kind}:${f.line}`).sort().join('\n');
+
+/**
+ * Browser-side twin of the server's secretsFingerprint (same sha256 over fingerprintInput), so the
+ * dialog can send the fingerprint of the warning it showed. Null when Web Crypto is unavailable
+ * (insecure context); the server then refuses and returns its own findings and fingerprint.
+ */
+export async function clientSecretsFingerprint(findings: readonly SecretFinding[]): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(fingerprintInput(findings)));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }

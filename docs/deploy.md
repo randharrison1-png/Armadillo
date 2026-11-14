@@ -10,7 +10,9 @@ allowlist. It is deliberately outside `supabase/migrations` because the local te
 ## Public pastebin: abuse reports, rate limits, and the proxy-header trust assumption
 Apply `supabase/migrations/0006_rate_limit.sql` with the other migrations. It creates the private
 `rate_limit_hits` table (no grants for any API role) and `check_rate_limit()` (SECURITY DEFINER,
-empty `search_path`, executable by `anon` and `authenticated`). Limits: 10 publishes/hour/user,
+empty `search_path`, executable by `anon` and `authenticated`). `rate_limit_hits` is reachable only
+through `check_rate_limit`: RLS is on, every client grant is revoked, and RLS is deliberately not
+FORCEd, so the function works whether or not its owner has BYPASSRLS (hosted roles may not). Limits: 10 publishes/hour/user,
 60 other paste edits/hour/user, 5 abuse reports/hour per reporter.
 
 Abuse reports work signed out, so the reporter is identified only by a hash of the client address:

@@ -9,6 +9,9 @@ import { EVIDENCE_REQUIRED_MESSAGE, EVIDENCE_STEPS, FlowchartError, REPORT_STEPS
 // current_cycle/status change), THEN the workflow_steps row FOR UPDATE, then read current_cycle and
 // evidence and write. The workflow_steps_touch_session trigger updates the session row after a step
 // write, so taking step-then-session (or SHARE on the session) can deadlock (40P01). Tasks 17/18 follow this order.
+// rate_limit_hits (check_rate_limit): always LAST, a leaf. Pastebin paths lock the paste row first (updates: FOR UPDATE),
+// then take the hit, then write; reports take the hit before an insert-only write. Never lock a session, script or
+// workflow row after a hit in the same transaction (the hit's row lock is held until commit).
 export { STEP_LABEL, STEP_ORDER, currentStep, stageLabel } from './stepMeta';
 
 /**

@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asAnon, asUser, createTestUser, sql } from './helpers';
 import { buildGraph } from './coreFixtures';
@@ -343,6 +345,43 @@ describe('check_rate_limit', () => {
     expect(fn.proconfig).toContain('search_path=""');
     const grants = await sql`select grantee from information_schema.routine_privileges where routine_name = 'check_rate_limit' and grantee in ('anon', 'authenticated', 'PUBLIC') order by grantee`;
     expect(grants.map((g) => g.grantee)).toEqual(['anon', 'authenticated']);
+  });
+});
+
+describe('check_rate_limit under a non-superuser, non-BYPASSRLS owner (hosted-Supabase shape)', () => {
+  it('works when the function owner cannot bypass RLS', async () => {
+    const migration = readFileSync(join(import.meta.dirname, '..', '..', 'supabase', 'migrations', '0006_rate_limit.sql'), 'utf8');
+    expect(migration).not.toMatch(/force row level security/i);
+    await sql.unsafe(`
+      drop schema if exists rlt cascade;
+      do $$ begin
+        if not exists (select from pg_roles where rolname = 'rl_owner') then create role rl_owner nologin nosuperuser nobypassrls; end if;
+      end $$;
+      create schema rlt authorization rl_owner;
+      grant usage on schema auth to rl_owner;
+      grant execute on function auth.uid(), auth.jwt() to rl_owner;
+      grant usage on schema rlt to anon, authenticated;
+    `);
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe('set local role rl_owner');
+        await tx.unsafe(migration.replaceAll('public.', 'rlt.'));
+      });
+      const u = await createTestUser();
+      const hit = (key: string) => asUser(u.id, (tx) => tx`select * from rlt.check_rate_limit(${key}, 1, 3600)`);
+      expect((await hit(`edit:${u.id}`))[0]).toMatchObject({ ok: true, retry_after: 0 });
+      const second = (await hit(`edit:${u.id}`))[0];
+      // asUser rolls back, so each call sees a fresh table; drive the 2nd hit in one transaction instead
+      expect(second.ok).toBe(true);
+      const both = await asUser(u.id, async (tx) => {
+        await tx`select * from rlt.check_rate_limit(${`edit:${u.id}`}, 1, 3600)`;
+        return tx`select * from rlt.check_rate_limit(${`edit:${u.id}`}, 1, 3600)`;
+      });
+      expect(both[0].ok).toBe(false);
+      await expect(asUser(u.id, (tx) => tx`select * from rlt.rate_limit_hits`)).rejects.toThrow(/permission denied/);
+    } finally {
+      await sql.unsafe('drop schema if exists rlt cascade');
+    }
   });
 });
 

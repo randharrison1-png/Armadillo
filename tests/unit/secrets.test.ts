@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { scanSecrets, SECRET_KIND_LABEL } from '@/lib/secrets';
+import { clientSecretsFingerprint, scanSecrets, SECRET_KIND_LABEL } from '@/lib/secrets';
 import { secretsFingerprint } from '@/server/security/secrets';
 
 const kinds = (s: string) => scanSecrets(s).map((f) => `${f.kind}:${f.line}`);
@@ -47,6 +47,27 @@ describe('scanSecrets', () => {
     expect(kinds('  @net user bob Passw0rd!')).toEqual(['password_literal:1']);
     expect(kinds('echo "bob:Passw0rd!" | chpasswd')).toEqual(['password_literal:1']);
     expect(kinds('echo bob:Passw0rd! | sudo chpasswd')).toEqual(['password_literal:1']);
+  });
+
+  it('detects the common real-world password forms', () => {
+    for (const line of [
+      'DB_PASSWORD="hunter2hunter2"',
+      "export MYSQL_ROOT_PASSWORD='hunter2'",
+      '$AdminPassword = "Sup3rS3cret!"',
+      '$newPassword="Sup3rS3cret!"',
+      'ConvertTo-SecureString -AsPlainText "P@ssw0rd" -Force',
+      'ConvertTo-SecureString -AsPlainText -String "P@ssw0rd" -Force',
+      'cmd /c net user bob Passw0rd! /add',
+      'cmd.exe /k net user bob Passw0rd!',
+    ]) {
+      expect(kinds(line), line).toEqual(['password_literal:1']);
+    }
+  });
+
+  it('does not flag variable references as passwords', () => {
+    expect(kinds('$password = "$env:PW"')).toEqual([]);
+    expect(kinds("DB_PASSWORD='$DB_PASS'")).toEqual([]);
+    expect(kinds('New-LocalUser -Password "$pw"')).toEqual([]);
   });
 
   it('does not flag ordinary hardening script content', () => {
@@ -101,6 +122,10 @@ describe('scanSecrets performance (no catastrophic backtracking)', () => {
     'password = no closing quote': fill('password = "' + 'a'.repeat(300)),
     'net user spaces': fill('net user ' + 'a'.repeat(200) + ' '),
     '-Password spaces': fill('-Password' + ' '.repeat(50) + '(('),
+    'prefix name run': fill('A_'.repeat(30) + 'password '),
+    'name run no keyword': fill('a_$'.repeat(50)),
+    'ConvertTo flag-first': fill('ConvertTo-SecureString' + ' -AsPlainText'.repeat(5) + ' "' + 'a'.repeat(300)),
+    'cmd /c net user': fill('cmd /c '.repeat(20) + 'net user ' + 'a'.repeat(100) + ' '),
     'ConvertTo-SecureString': fill('ConvertTo-SecureString "' + 'a'.repeat(300)),
     'BEGIN dashes': fill('-----BEGIN ' + 'A'.repeat(50)),
     'ghp_ near misses': fill('ghp_' + 'a'.repeat(300) + '_'),
@@ -121,6 +146,12 @@ describe('scanSecrets performance (no catastrophic backtracking)', () => {
 });
 
 describe('secretsFingerprint', () => {
+  it('the browser-side fingerprint equals the server one', async () => {
+    const f = scanSecrets('a\nAKIAIOSFODNN7EXAMPLE\npassword = "hunter2hunter2"');
+    expect(f).toHaveLength(2);
+    expect(await clientSecretsFingerprint(f)).toBe(secretsFingerprint(f));
+  });
+
   it('is sha256 of the sorted kind:line list and ignores order', () => {
     const a = secretsFingerprint([
       { kind: 'jwt', line: 3 },

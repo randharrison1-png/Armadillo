@@ -13,7 +13,8 @@ create table public.rate_limit_hits (
 create index rate_limit_hits_window_idx on public.rate_limit_hits (window_start);
 
 alter table public.rate_limit_hits enable row level security;
-alter table public.rate_limit_hits force row level security;
+-- (No FORCE: with every client grant revoked the owner is the only writer, and FORCE would make the
+-- SECURITY DEFINER function depend on its owner having BYPASSRLS, which hosted roles may lack.)
 -- Default privileges grant API roles everything on new tables (as on hosted Supabase): take it back.
 revoke all on public.rate_limit_hits from public, anon, authenticated, service_role;
 

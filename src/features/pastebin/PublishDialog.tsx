@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { fieldClass, Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import type { SecretFinding } from '@/lib/secrets';
+import { clientSecretsFingerprint, scanSecrets, type SecretFinding } from '@/lib/secrets';
 import type { ScriptLanguage } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { publishPasteAction, type PasteFieldErrors } from './actions';
@@ -45,7 +45,9 @@ function ErrorLine({ message }: { message?: string }) {
  * the user presses Publish, and from the private library also confirms the copy; if secrets are
  * detected they must also tick "Publish anyway". The server enforces all of it again.
  *
- * Flow: form -> (private-source confirmation) -> pending -> (secrets warning -> pending) -> done.
+ * Flow: form -> (secrets warning, "Publish anyway") -> (private-source confirmation) -> pending -> done.
+ * The warning comes from the same scanner the server runs; if the server finds something else
+ * (different fingerprint) it sends back fresh findings and the warning is shown again.
  */
 export function PublishDialog({
   open,
@@ -77,12 +79,13 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
   const [errors, setErrors] = useState<PasteFieldErrors>({});
   const [secrets, setSecrets] = useState<{ findings: SecretFinding[]; fingerprint: string } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const [slug, setSlug] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const ids = useId();
 
-  async function publish(opts: { confirmedSource: boolean; ack?: { fingerprint: string } }) {
+  async function publish(opts: { ack?: { fingerprint: string } }) {
     const from: Phase = opts.ack ? 'secrets' : 'form';
     setPhase('pending');
     setErrors({});
@@ -94,7 +97,7 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
         visibility,
         expiresIn: expiresIn === 'never' ? null : expiresIn,
         fromPrivate: Boolean(source),
-        confirmPrivateSource: opts.confirmedSource,
+        confirmPrivateSource: Boolean(source),
         acknowledgeSecrets: Boolean(opts.ack),
         secretsFingerprint: opts.ack?.fingerprint,
       });
@@ -106,6 +109,7 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
         if (f.code === 'secrets') {
           setSecrets({ findings: f.findings, fingerprint: f.fingerprint });
           setAcknowledged(false);
+          setConfirmed(false);
           setPhase('secrets');
         } else if (f.code === 'rate_limited') {
           setErrors({ form: `You have published a lot recently. ${retryMessage(f.retryAfter)}` });
@@ -123,14 +127,30 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
     }
   }
 
-  function submitForm() {
+  /** After the secrets step (if any): the private-source confirmation, then publish. */
+  function proceed(ack?: { fingerprint: string }) {
+    if (source && !confirmed) setPhase('confirm');
+    else void publish({ ack });
+  }
+
+  async function submitForm() {
     const local: PasteFieldErrors = {};
     if (!title.trim()) local.title = 'Enter a title.';
     if (!content.trim()) local.content = 'Content cannot be empty.';
     setErrors(local);
     if (Object.keys(local).length) return;
-    if (source) setPhase('confirm');
-    else void publish({ confirmedSource: false });
+    setConfirmed(false);
+    setAcknowledged(false);
+    const findings = scanSecrets(content);
+    if (findings.length > 0) {
+      const fingerprint = await clientSecretsFingerprint(findings);
+      if (fingerprint) {
+        setSecrets({ findings, fingerprint });
+        return setPhase('secrets');
+      }
+    }
+    setSecrets(null);
+    proceed();
   }
 
   async function copyLink() {
@@ -200,10 +220,17 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
         </p>
         <ErrorLine message={errors.form} />
         <DialogFooter>
-          <Button variant="secondary" onClick={() => setPhase('form')}>
+          <Button variant="secondary" onClick={() => setPhase(secrets && acknowledged ? 'secrets' : 'form')}>
             Back
           </Button>
-          <Button onClick={() => void publish({ confirmedSource: true })}>Publish copy</Button>
+          <Button
+            onClick={() => {
+              setConfirmed(true);
+              void publish({ ack: secrets && acknowledged ? { fingerprint: secrets.fingerprint } : undefined });
+            }}
+          >
+            Publish copy
+          </Button>
         </DialogFooter>
       </>
     );
@@ -222,7 +249,7 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
           <Button variant="secondary" onClick={() => setPhase('form')}>
             Back to edit
           </Button>
-          <Button disabled={!acknowledged} onClick={() => void publish({ confirmedSource: true, ack: { fingerprint: secrets.fingerprint } })}>
+          <Button disabled={!acknowledged} onClick={() => proceed({ fingerprint: secrets.fingerprint })}>
             Publish
           </Button>
         </DialogFooter>
@@ -243,7 +270,7 @@ function PublishBody({ initial, onClose }: { initial?: PublishInitial; onClose: 
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
-          submitForm();
+          void submitForm();
         }}
       >
         <div className="flex flex-col gap-1">

@@ -48,22 +48,23 @@ test('publish from the library: private-source confirmation, secret warning, pub
   await expect(dialog.getByLabel('Content')).toHaveValue(/AWS_ACCESS_KEY_ID/);
   await dialog.getByRole('button', { name: 'Publish', exact: true }).click();
 
-  // 1. private-source confirmation names the source
-  const confirm = page.getByRole('dialog', { name: 'Publish a copy from your private library?' });
-  await expect(confirm).toContainText(`Publishing a copy of ${name} v1 from your private library`);
-  expect(await sql`select 1 from paste.pastes where owner_id = ${userId}`).toHaveLength(0);
-  await confirm.getByRole('button', { name: 'Publish copy' }).click();
-
-  // 2. secrets warning: kind + line, never the key itself
+  // 1. secrets warning comes first: kind + line, never the key itself; nothing is published yet
   const warn = page.getByRole('dialog', { name: 'Check before publishing' });
   await expect(warn).toContainText('Line 2');
   await expect(warn).toContainText('AWS access key');
   await expect(warn).not.toContainText(AWS);
+  await expect(page.getByRole('dialog', { name: 'Publish a copy from your private library?' })).toHaveCount(0);
   expect(await sql`select 1 from paste.pastes where owner_id = ${userId}`).toHaveLength(0);
   const publish = warn.getByRole('button', { name: 'Publish', exact: true });
   await expect(publish).toBeDisabled();
   await warn.getByRole('checkbox', { name: 'Publish anyway' }).click();
   await publish.click();
+
+  // 2. then the private-source confirmation names the source
+  const confirm = page.getByRole('dialog', { name: 'Publish a copy from your private library?' });
+  await expect(confirm).toContainText(`Publishing a copy of ${name} v1 from your private library`);
+  expect(await sql`select 1 from paste.pastes where owner_id = ${userId}`).toHaveLength(0);
+  await confirm.getByRole('button', { name: 'Publish copy' }).click();
 
   // 3. success
   const done = page.getByRole('dialog', { name: 'Paste published' });
