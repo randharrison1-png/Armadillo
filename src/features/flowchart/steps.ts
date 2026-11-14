@@ -3,6 +3,7 @@ import { logActivity } from '@/server/activity';
 import { requireUser } from '@/server/auth';
 import { withUser, type Tx } from '@/server/db/withUser';
 import type { StepKey, StepStatus, WorkflowStep } from '@/lib/types';
+import { EVIDENCE_REQUIRED_MESSAGE, EVIDENCE_STEPS, FlowchartError, REPORT_STEPS } from './types';
 
 export { STEP_LABEL, STEP_ORDER, currentStep, stageLabel } from './stepMeta';
 
@@ -23,13 +24,19 @@ export type StepStatusInput = { sessionId: string; step: StepKey; status: StepSt
 /** setStepStatus inside the caller's transaction (`tx` from withUser), so it commits or rolls back with the caller's own writes. */
 export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<WorkflowStep> {
   {
-    const [session] = await tx<{ current_cycle: number }[]>`
-      select current_cycle from public.sessions where id = ${input.sessionId}`;
-    if (!session) throw new Error('Session not found');
+    // Lock order: step row, then session row (shared), so current_cycle and the evidence we check
+    // cannot change under us before the write commits.
     const [step] = await tx<WorkflowStep[]>`
       select * from public.workflow_steps where session_id = ${input.sessionId} and step = ${input.step}::public.step_key for update`;
     if (!step) throw new Error('Workflow step not found');
+    const [session] = await tx<{ current_cycle: number }[]>`
+      select current_cycle from public.sessions where id = ${input.sessionId} for share`;
+    if (!session) throw new Error('Session not found');
     if (step.status === input.status) return step;
+    // Audit accuracy (spec 10): never record Complete and Verified without evidence.
+    if (input.status === 'verified' && EVIDENCE_STEPS.includes(input.step) && !(await hasEvidence(tx, input.sessionId, input.step, session.current_cycle))) {
+      throw new FlowchartError(EVIDENCE_REQUIRED_MESSAGE);
+    }
 
     const [updated] = await tx<WorkflowStep[]>`
       update public.workflow_steps
@@ -49,4 +56,28 @@ export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<W
     });
     return updated;
   }
+}
+
+/**
+ * Evidence exists for `step` in the session's current cycle. Evidence has no cycle column: cycle 1
+ * counts everything; later cycles count rows created since the cycle's first step event.
+ * LEADS steps are also satisfied by a LEADS report of the current cycle (inspect_leads: only a report).
+ */
+async function hasEvidence(tx: Tx, sessionId: string, step: StepKey, cycle: number): Promise<boolean> {
+  if (REPORT_STEPS.includes(step)) {
+    const [r] = await tx`select 1 from public.leads_reports where session_id = ${sessionId} and cycle_no = ${cycle} limit 1`;
+    if (r) return true;
+  }
+  if (step === 'inspect_leads') return false;
+  let since: Date | null = null;
+  if (cycle > 1) {
+    const [e] = await tx<{ start: Date | null }[]>`
+      select min(created_at) as start from public.workflow_step_events where session_id = ${sessionId} and cycle_no = ${cycle}`;
+    if (!e?.start) return false;
+    since = e.start;
+  }
+  const [row] = await tx`
+    select 1 from public.evidence where session_id = ${sessionId} and step = ${step}::public.step_key
+    ${since ? tx`and created_at >= ${since}` : tx``} limit 1`;
+  return !!row;
 }

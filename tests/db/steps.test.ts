@@ -41,6 +41,7 @@ describe('setStepStatus', () => {
     const s = await fresh();
     await setStepStatus({ sessionId: s.id, step: 'run_leads', status: 'blocked', note: 'waiting' });
     await sql`update public.sessions set current_cycle = 2 where id = ${s.id}`;
+    await sql`insert into public.leads_reports (owner_id, session_id, cycle_no, filename) values (${current.id}, ${s.id}, 2, 'r.txt')`;
     const row = await setStepStatus({ sessionId: s.id, step: 'run_leads', status: 'verified' });
     expect(row.notes).toBe('waiting');
     const [ev] = await sql`select cycle_no, from_status from public.workflow_step_events where session_id = ${s.id} and to_status = 'verified'`;
@@ -88,5 +89,25 @@ describe('setStepStatusTx', () => {
     const row = await withUser(current.id, (tx) => setStepStatusTx(tx, { sessionId: s.id, step: 'open_readme', status: 'in_progress' }));
     expect(row.status).toBe('in_progress');
     expect(await sql`select 1 from public.workflow_step_events where session_id = ${s.id}`).toHaveLength(1);
+  });
+});
+
+describe('setStepStatusTx evidence guard', () => {
+  const verify = (sessionId: string, step: 'run_hardening' | 'open_readme') =>
+    withUser(current.id, (tx) => setStepStatusTx(tx, { sessionId, step, status: 'verified' }));
+
+  it('refuses verified on an evidence-bearing step without evidence, allows it with evidence', async () => {
+    const s = await fresh();
+    await expect(verify(s.id, 'run_hardening')).rejects.toThrow('Attach evidence before marking this step Complete and Verified');
+    expect(await sql`select 1 from public.workflow_step_events where session_id = ${s.id}`).toHaveLength(0);
+    await sql`insert into public.evidence (owner_id, session_id, step, kind) values (${current.id}, ${s.id}, 'run_hardening', 'other')`;
+    expect((await verify(s.id, 'run_hardening')).status).toBe('verified');
+  });
+
+  it('does not guard steps that may be verified manually, and throws explicitly for a missing step row', async () => {
+    const s = await fresh();
+    expect((await verify(s.id, 'open_readme')).status).toBe('verified');
+    await sql`delete from public.workflow_steps where session_id = ${s.id} and step = 'run_hardening'`;
+    await expect(verify(s.id, 'run_hardening')).rejects.toThrow('Workflow step not found');
   });
 });

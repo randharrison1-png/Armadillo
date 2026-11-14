@@ -5,11 +5,9 @@ import { withUser, type Tx } from '@/server/db/withUser';
 import type { StepKey, StepStatus, WorkflowStep } from '@/lib/types';
 import { STEP_ORDER } from './stepMeta';
 import { setStepStatusTx } from './steps';
-import { EVIDENCE_REQUIRED_MESSAGE, EVIDENCE_STEPS, NOTE_MAX, READ_ONLY_MESSAGE, REPORT_STEPS, type FlowchartData } from './types';
+import { FlowchartError, NOTE_MAX, READ_ONLY_MESSAGE, type FlowchartData } from './types';
 
-/** A refusal with a message that is safe to show the user. */
-export class FlowchartError extends Error {}
-
+export { FlowchartError };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const stepKey = z.enum(STEP_ORDER as [StepKey, ...StepKey[]]);
 const statusSchema = z.enum(['not_started', 'in_progress', 'verified', 'blocked']);
@@ -25,44 +23,13 @@ async function openSession(tx: Tx, sessionId: string): Promise<{ current_cycle: 
   return s;
 }
 
-/**
- * Evidence exists for `step` in the session's current cycle. Evidence has no cycle column: cycle 1
- * counts everything; later cycles count rows created since the cycle's first step event.
- * LEADS steps are also satisfied by a LEADS report of the current cycle.
- */
-async function hasEvidence(tx: Tx, sessionId: string, step: StepKey, cycle: number): Promise<boolean> {
-  if (REPORT_STEPS.includes(step)) {
-    const [r] = await tx`select 1 from public.leads_reports where session_id = ${sessionId} and cycle_no = ${cycle} limit 1`;
-    if (r) return true;
-  }
-  if (step === 'inspect_leads') return false; // a report is the only evidence for inspecting one
-  let since: Date | null = null;
-  if (cycle > 1) {
-    const [e] = await tx<{ start: Date | null }[]>`
-      select min(created_at) as start from public.workflow_step_events where session_id = ${sessionId} and cycle_no = ${cycle}`;
-    if (!e?.start) return false;
-    since = e.start;
-  }
-  const [row] = await tx`
-    select 1 from public.evidence where session_id = ${sessionId} and step = ${step}::public.step_key
-    ${since ? tx`and created_at >= ${since}` : tx``} limit 1`;
-  return !!row;
-}
-
 /** Validated, read-only-aware status change with the evidence guard for Complete and Verified. */
 export function changeStepStatusFor(userId: string, input: ChangeStatusInput): Promise<WorkflowStep> {
   const parsed = statusInput.safeParse(input);
   if (!parsed.success) return Promise.reject(new FlowchartError('Invalid step or status'));
   const data = parsed.data;
   return withUser(userId, async (tx) => {
-    const session = await openSession(tx, data.sessionId);
-    if (data.status === 'verified' && EVIDENCE_STEPS.includes(data.step)) {
-      const [cur] = await tx<{ status: StepStatus }[]>`
-        select status from public.workflow_steps where session_id = ${data.sessionId} and step = ${data.step}::public.step_key`;
-      if (cur && cur.status !== 'verified' && !(await hasEvidence(tx, data.sessionId, data.step, session.current_cycle))) {
-        throw new FlowchartError(EVIDENCE_REQUIRED_MESSAGE);
-      }
-    }
+    await openSession(tx, data.sessionId);
     return setStepStatusTx(tx, data);
   });
 }

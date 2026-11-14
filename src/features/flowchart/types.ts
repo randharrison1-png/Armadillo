@@ -27,3 +27,6 @@ export const READ_ONLY_MESSAGE = 'This session is completed and read-only';
 export const EVIDENCE_STEPS: readonly StepKey[] = ['run_hardening', 'run_leads', 'inspect_leads', 'check_points', 'submit_final'];
 /** Of those, steps a LEADS report alone satisfies. */
 export const REPORT_STEPS: readonly StepKey[] = ['run_leads', 'inspect_leads'];
+
+/** A refusal with a message that is safe to show the user. */
+export class FlowchartError extends Error {}
