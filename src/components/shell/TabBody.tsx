@@ -41,6 +41,10 @@ const FlowchartTab = dynamic(() => import('@/features/flowchart/FlowchartTab').t
   ssr: false,
   loading: () => <LoadingState label="Loading flowchart" />,
 });
+const ReportTab = dynamic(() => import('@/features/reports/ReportTab').then((m) => m.ReportTab), {
+  ssr: false,
+  loading: () => <LoadingState label="Loading report" />,
+});
 const ProposalDiffTab = dynamic(() => import('@/features/proposals/ProposalDiffTab').then((m) => m.ProposalDiffTab), {
   ssr: false,
   loading: () => <LoadingState label="Loading proposal" />,
@@ -78,6 +82,6 @@ export function TabBody({ tab, namespace }: { tab: TabDescriptor; namespace: str
     case 'flowchart':
       return <FlowchartTab tab={tab} namespace={namespace} />;
     case 'report':
-      return <EmptyState icon={TAB_ICONS[tab.kind]} title={tab.title} description="Nothing here yet." />;
+      return <ReportTab tab={tab} namespace={namespace} />;
   }
 }

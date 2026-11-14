@@ -1,0 +1,4 @@
+This is an export from a tool nobody has documented yet.
+It contains narrative sentences, hashes and numbers: 0x41414141, 3.14, 2026-11-13.
+Nothing here resembles a pass or a fail marker, and no points are listed.
+Everything is ok in prose, but lowercase words are not treated as markers.

@@ -1,0 +1,13 @@
+LEADS Audit Report
+Host: LAB-WIN11
+Date: 2026-11-13 10:42:07
+
+[+] Guest account is disabled
+[-] Password history is not enforced (remembered passwords: 0)
+[+] Windows Firewall enabled for all profiles
+[-] Remote Desktop is enabled
+[!] Automatic updates are set to notify only
+[+] SMBv1 is disabled
+
+Summary
+Score: 84/100 points

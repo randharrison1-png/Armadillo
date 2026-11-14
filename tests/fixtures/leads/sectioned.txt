@@ -1,0 +1,19 @@
+=== LEADS Compliance Scan ===
+Scan started 2026-11-13T11:02:00Z
+
+== Accounts ==
+PASS [low] Guest account disabled
+FAIL [high] Unauthorized user "mallory" is an administrator
+FAIL [critical] Blank password set for local account
+PASS [medium] Account lockout threshold configured
+
+== Firewall ==
+PASS [medium] Firewall enabled on the domain profile
+FAIL [high] Inbound rule allows Telnet (TCP 23)
+WARN [info] Logging of dropped packets is off
+
+### Services
+FAIL severity: medium FTP service is running
+OK Print Spooler is stopped
+
+Total: 84 out of 100

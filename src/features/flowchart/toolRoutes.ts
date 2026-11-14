@@ -3,6 +3,7 @@ import type { ConversationMode } from '@/features/claude/types';
 import { requestClaudeIntent } from '@/features/claude/claudeIntent';
 import { scriptTab } from '@/features/library/scriptTabs';
 import { readmeTab } from '@/features/readme/readmeUi';
+import { REPORTS_TAB } from '@/features/reports/reportUi';
 import { REQUIREMENTS_TAB } from '@/features/requirements/matrix';
 import { getWorkspaceStore } from '@/features/workspace/store';
 
@@ -31,7 +32,6 @@ export type ToolRoute = TabDescriptor & {
 };
 
 const FLOWCHART_TAB: TabDescriptor = { key: 'flowchart', kind: 'flowchart', title: 'Flowchart' };
-const REPORTS_TAB: TabDescriptor = { key: 'report', kind: 'report', title: 'LEADS reports' };
 const CLAUDE_TAB: TabDescriptor = { key: 'claude', kind: 'claude', title: 'Claude' };
 
 /** Where a step's action button goes. Pure: tabs are opened by openToolRoute. */
