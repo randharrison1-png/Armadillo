@@ -47,5 +47,7 @@ export const updatePasteSchema = z.object({
     .refine((s) => Date.parse(s) > Date.now(), 'The expiry must be in the future.')
     .nullable()
     .optional(),
+  /** Set when the user confirmed a secret-scan warning (enforced by the publish seam). */
+  acknowledgeSecrets: z.boolean().optional(),
 });
 export type UpdatePasteInput = z.input<typeof updatePasteSchema>;

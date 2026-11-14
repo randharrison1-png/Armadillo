@@ -1,9 +1,15 @@
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { asAnon, asUser, createTestUser, sql } from './helpers';
 import { testDatabaseUrl } from './env';
 import { closePool } from '@/server/db/pool';
+import { validateForPublish } from '@/features/pastebin/publish';
 import { deletePasteFor, getPaste, listMyPastes, searchPublicPastes, updatePasteFor } from '@/features/pastebin/service';
+
+vi.mock('@/features/pastebin/publish', async (orig) => {
+  const m = await orig<typeof import('@/features/pastebin/publish')>();
+  return { ...m, validateForPublish: vi.fn(m.validateForPublish) };
+});
 
 beforeAll(() => {
   process.env.DATABASE_URL ??= testDatabaseUrl();
@@ -239,5 +245,42 @@ describe('service', () => {
     expect(acts.every((a) => a.entity_type === 'paste')).toBe(true);
     expect(JSON.stringify(acts)).not.toContain('new body');
     expect(JSON.stringify(acts)).not.toContain('secret-ish');
+  });
+
+  it('calls the publish seam on every changing update, with effective content and visibility; a rejection blocks the write', async () => {
+    const owner = await createTestUser();
+    const s = await seed(owner.id, { content: 'stored body', visibility: 'unlisted' });
+    const spy = vi.mocked(validateForPublish);
+    spy.mockClear();
+
+    // metadata-only flip: seam sees STORED content and the new visibility
+    await updatePasteFor(owner.id, { slug: s, visibility: 'public', acknowledgeSecrets: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({ userId: owner.id, action: 'update', content: 'stored body', visibility: 'public', prevVisibility: 'unlisted', expiresAt: null, acknowledgeSecrets: true });
+
+    // removing an expiry also goes through the seam
+    await updatePasteFor(owner.id, { slug: s, expiresAt: future(3600_000).toISOString() });
+    spy.mockClear();
+    await updatePasteFor(owner.id, { slug: s, expiresAt: null });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ content: 'stored body', expiresAt: null, visibility: 'public', prevVisibility: 'public' }));
+
+    // content edit passes the new content
+    spy.mockClear();
+    await updatePasteFor(owner.id, { slug: s, content: 'new body' });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ content: 'new body' }));
+
+    // a rejection blocks the flip and nothing is written or logged
+    await updatePasteFor(owner.id, { slug: s, visibility: 'unlisted' });
+    spy.mockClear();
+    spy.mockRejectedValueOnce(new Error('blocked by seam'));
+    await expect(updatePasteFor(owner.id, { slug: s, visibility: 'public' })).rejects.toThrow('blocked by seam');
+    expect((await sql`select visibility from paste.pastes where slug = ${s}`)[0].visibility).toBe('unlisted');
+    const n = (await sql`select count(*)::int as n from activity_log where entity_id = ${s}`)[0].n;
+    expect(n).toBe(5); // 5 successful updates above, none for the rejected one
+
+    // no-op update (nothing to change) does not call the seam
+    spy.mockClear();
+    await updatePasteFor(owner.id, { slug: s });
+    expect(spy).not.toHaveBeenCalled();
   });
 });

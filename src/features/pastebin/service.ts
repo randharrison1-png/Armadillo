@@ -133,7 +133,6 @@ export async function getOwnPaste(userId: string, slug: string): Promise<OwnPast
 /** Owner-only edit. Throws ZodError on bad input, PasteNotFoundError if not the owner's live paste. */
 export async function updatePasteFor(userId: string, input: UpdatePasteInput): Promise<OwnPasteWithContent> {
   const p = updatePasteSchema.parse(input);
-  if (p.content !== undefined) await validateForPublish(p.content, { userId, action: 'update' });
   const changes: Record<string, unknown> = {};
   if (p.title !== undefined) changes.title = p.title;
   if (p.content !== undefined) changes.content = p.content;
@@ -142,16 +141,26 @@ export async function updatePasteFor(userId: string, input: UpdatePasteInput): P
   if (p.expiresAt !== undefined) changes.expires_at = p.expiresAt === null ? null : new Date(p.expiresAt);
   const cols = Object.keys(changes);
   return withUser(userId, async (tx) => {
-    const rows =
-      cols.length === 0
-        ? await tx<OwnPasteWithContent[]>`select slug, title, language, visibility, expires_at, deleted_at, created_at, updated_at, content from paste.pastes where slug = ${p.slug} and owner_id = auth.uid() and deleted_at is null`
-        : await tx<OwnPasteWithContent[]>`
-            update paste.pastes set ${tx(changes as never, ...cols)}
-            where slug = ${p.slug} and owner_id = auth.uid() and deleted_at is null
-            returning slug, title, language, visibility, expires_at, deleted_at, created_at, updated_at, content`;
-    const row = rows[0];
-    if (!row) throw new PasteNotFoundError();
-    if (cols.length) await logActivity(tx, { action: 'paste.update', entityType: 'paste', entityId: p.slug, meta: { fields: cols } });
+    // Lock the row so the seam sees exactly what the update will change.
+    const [cur] = await tx<(OwnPasteWithContent)[]>`
+      select slug, title, language, visibility, expires_at, deleted_at, created_at, updated_at, content
+      from paste.pastes where slug = ${p.slug} and owner_id = auth.uid() and deleted_at is null for update`;
+    if (!cur) throw new PasteNotFoundError();
+    if (cols.length === 0) return cur;
+    await validateForPublish({
+      userId,
+      action: 'update',
+      content: p.content ?? cur.content,
+      visibility: p.visibility ?? cur.visibility,
+      prevVisibility: cur.visibility,
+      expiresAt: p.expiresAt === undefined ? cur.expires_at : p.expiresAt === null ? null : new Date(p.expiresAt),
+      acknowledgeSecrets: p.acknowledgeSecrets,
+    });
+    const [row] = await tx<OwnPasteWithContent[]>`
+      update paste.pastes set ${tx(changes as never, ...cols)}
+      where slug = ${p.slug} and owner_id = auth.uid() and deleted_at is null
+      returning slug, title, language, visibility, expires_at, deleted_at, created_at, updated_at, content`;
+    await logActivity(tx, { action: 'paste.update', entityType: 'paste', entityId: p.slug, meta: { fields: cols } });
     return row;
   });
 }
