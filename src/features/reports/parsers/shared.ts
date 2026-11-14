@@ -52,7 +52,7 @@ const SCORE_RE = new RegExp(String.raw`\bscore\b\s*[:=]?\s*${NUM}(?:\s*/\s*${NUM
 
 /** One line's score, or null. Patterns: `84/100 points`, `84 out of 100`, `Score: 84`, `Score: 84/100`. */
 export function scoreFromLine(line: string): Score | null {
-  const l = line.length > MAX_LINE ? line.slice(0, MAX_LINE) : line;
+  const l = line.slice(0, MAX_LINE).replace(/\s+/g, ' ');
   if (!/\d/.test(l)) return null;
   let m = POINTS_RE.exec(l);
   let x: number | undefined;

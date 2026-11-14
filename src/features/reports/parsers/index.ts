@@ -43,6 +43,7 @@ function normalize(r: ParsedReport): ParsedReport {
     findings,
     ...(truncated ? { truncated: true } : {}),
     ...(r.parseError ? { parseError: r.parseError } : {}),
+    ...(r.parseNote ? { parseNote: r.parseNote } : {}),
   };
 }
 

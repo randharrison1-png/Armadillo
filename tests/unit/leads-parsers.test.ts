@@ -205,3 +205,44 @@ describe('report text preparation', () => {
     expect(reportTextFromBytes(new TextEncoder().encode('line one\u0000\nline two'), 'x.log').text).toBe('line one\nline two');
   });
 });
+
+describe('performance regressions (adversarial 20 MB-class inputs)', () => {
+  const time = <T>(fn: () => T): [T, number] => {
+    const t = performance.now();
+    const r = fn();
+    return [r, performance.now() - t];
+  };
+
+  it('generic parser: long whitespace runs on marker lines parse in under 2 s', () => {
+    const line = `[+] a${' '.repeat(1990)}x`;
+    const raw = Array.from({ length: 12_500 }, () => line).join('\n'); // ~25 MB
+    const [r, ms] = time(() => parseLeadsReport(raw));
+    expect(r.parser).toBe('generic');
+    expect(r.findings.length).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it('generic parser: separator runs, header-like lines and trailing junk stay linear', () => {
+    const raw = [`==${' '.repeat(900)}x${'='.repeat(900)}-`, `FAIL ${':'.repeat(900)}x`, `###${' #'.repeat(450)}`, `${' '.repeat(1500)}${'-'.repeat(400)}x`]
+      .join('\n')
+      .repeat(4000);
+    const [, ms] = time(() => parseLeadsReport(raw));
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it('JSON parser: 20 MB minified array parses in under 2 s', () => {
+    const items = Array.from({ length: 6000 }, (_, i) => ({ title: `Check ${i}`, status: i % 2 ? 'fail' : 'pass', notes: 'x'.repeat(3300) }));
+    const raw = JSON.stringify(items);
+    expect(raw.length).toBeGreaterThan(19_000_000);
+    const [r, ms] = time(() => parseLeadsReport(raw));
+    expect(r.parser).toBe('json');
+    expect(r.findings).toHaveLength(5000);
+    expect(r.truncated).toBe(true);
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it('header and trim rewrites keep behavior', () => {
+    const r = parseLeadsReport('--- Services ---\nFAIL: - svc  stopped -\n#### Net ####\n[+] ok');
+    expect(r.findings.map((f) => [f.category, f.title])).toEqual([['Services', 'svc stopped'], ['Net', 'ok']]);
+  });
+});

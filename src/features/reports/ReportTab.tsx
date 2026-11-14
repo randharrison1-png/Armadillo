@@ -188,6 +188,11 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
             This report could not be parsed ({report.parseError}). The raw text is kept.
           </p>
         ) : null}
+        {report.parseNote ? (
+          <p role="status" className="text-small text-warning">
+            {report.parseNote}
+          </p>
+        ) : null}
         {report.truncated ? (
           <p role="status" className="text-small text-warning">
             Only the first {MAX_FINDINGS.toLocaleString('en-US')} findings are listed; the rest are in the raw text.

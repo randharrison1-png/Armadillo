@@ -19,6 +19,8 @@ export type ParsedReport = {
   findings: Finding[];
   /** More findings were present than MAX_FINDINGS; the rest are only in the raw text. */
   truncated?: boolean;
+  /** The parser stopped early (line or time budget); the rest is only in the raw text. */
+  parseNote?: string;
   /** A parser failed; the report is kept as raw text. */
   parseError?: string;
 };

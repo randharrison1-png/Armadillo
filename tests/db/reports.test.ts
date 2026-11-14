@@ -154,6 +154,20 @@ describe('recordLeadsReportFor', () => {
   });
 });
 
+describe('lock order', () => {
+  it('concurrent uploads and step changes on one session do not deadlock', async () => {
+    const s = await fresh();
+    const { setStepStatus } = await import('@/features/flowchart/steps');
+    const jobs: Promise<unknown>[] = [];
+    for (let i = 0; i < 6; i++) {
+      jobs.push(recordLeadsReportFor(current.id, { sessionId: s.id, file: { bytes: enc(`[+] c${i}`), filename: `c${i}.txt` } }));
+      jobs.push(setStepStatus({ sessionId: s.id, step: 'run_leads', status: i % 2 ? 'blocked' : 'in_progress' }));
+    }
+    await expect(Promise.all(jobs)).resolves.toBeDefined();
+    expect(await sql`select 1 from public.leads_reports where session_id = ${s.id}`).toHaveLength(6);
+  });
+});
+
 describe('report queries', () => {
   it('returns counts, details and raw line pages, scoped to the owner', async () => {
     const s = await fresh();

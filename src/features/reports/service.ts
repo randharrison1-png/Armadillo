@@ -46,6 +46,7 @@ export type StoredParsed = {
   lineCount: number;
   truncated: boolean;
   parseError: string | null;
+  parseNote: string | null;
 };
 
 /** Plain text of an uploaded report: PDFs via the extractor, everything else via reportTextFromBytes. */
@@ -86,6 +87,7 @@ export async function recordLeadsReportFor(userId: string, input: { sessionId: s
     lineCount,
     truncated: parsed.truncated === true,
     parseError: parsed.parseError ?? null,
+    parseNote: parsed.parseNote ?? null,
   };
   const storagePath = input.file.storagePath ?? null;
 
@@ -99,6 +101,14 @@ export async function recordLeadsReportFor(userId: string, input: { sessionId: s
       const [existing] = await tx<LeadsReport[]>`
         select * from public.leads_reports where session_id = ${input.sessionId} and storage_path = ${storagePath} limit 1`;
       if (existing) return existing;
+    }
+
+    // Lock order (app-wide): session (above), THEN the step row, then child rows. Only a not_started
+    // run_leads moves (to in_progress); verified/blocked/in_progress are never touched.
+    const [step] = await tx<{ status: StepStatus }[]>`
+      select status from public.workflow_steps where session_id = ${input.sessionId} and step = 'run_leads' for update`;
+    if (step?.status === 'not_started') {
+      await setStepStatusTx(tx, { sessionId: input.sessionId, step: 'run_leads', status: 'in_progress' });
     }
 
     const [report] = await tx<LeadsReport[]>`
@@ -116,13 +126,6 @@ export async function recordLeadsReportFor(userId: string, input: { sessionId: s
         raw_line: f.rawLine,
       }));
       await tx`insert into public.leads_findings ${tx(rows, 'report_id', 'title', 'status', 'severity', 'category', 'raw_line')}`;
-    }
-
-    // Lock order: session (above), then the step row.
-    const [step] = await tx<{ status: StepStatus }[]>`
-      select status from public.workflow_steps where session_id = ${input.sessionId} and step = 'run_leads' for update`;
-    if (step?.status === 'not_started') {
-      await setStepStatusTx(tx, { sessionId: input.sessionId, step: 'run_leads', status: 'in_progress' });
     }
 
     await logActivity(tx, {
@@ -190,7 +193,7 @@ export function getReportsOverviewFor(userId: string, sessionId: string): Promis
 export type ReportFinding = { id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; rawLine: number };
 export type ReportDetail = {
   sessionStatus: 'active' | 'completed';
-  report: Omit<ReportSummary, 'counts'> & { lineCount: number; truncated: boolean; parseError: string | null };
+  report: Omit<ReportSummary, 'counts'> & { lineCount: number; truncated: boolean; parseError: string | null; parseNote: string | null };
   findings: ReportFinding[];
 };
 
@@ -220,6 +223,7 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
         lineCount: r.parsed.lineCount ?? 0,
         truncated: r.parsed.truncated === true,
         parseError: r.parsed.parseError ?? null,
+        parseNote: r.parsed.parseNote ?? null,
       },
       findings: findings.map((f) => ({ id: f.id, title: f.title, status: f.status, severity: f.severity, category: f.category, rawLine: f.raw_line })),
     };

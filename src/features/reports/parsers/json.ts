@@ -22,22 +22,15 @@ const MAX_KEYS = ['max_score', 'maxScore', 'out_of', 'outOf', 'possible', 'max_p
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-let cache: { raw: string; value: unknown } | null = null;
-
-/** Parsed JSON container (object or array), or undefined. Caches the last input so detect + parse parse once. */
+/** Parsed JSON container (object or array), or undefined. Nothing is cached: a cached 25 MB input would stay pinned. */
 function parseContainer(raw: string): unknown {
-  if (cache?.raw === raw) return cache.value;
   const t = raw.trim();
-  let value: unknown;
-  if (t.startsWith('[') || t.startsWith('{')) {
-    try {
-      value = JSON.parse(t);
-    } catch {
-      value = undefined;
-    }
+  if (!t.startsWith('[') && !t.startsWith('{')) return undefined;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return undefined;
   }
-  cache = { raw, value };
-  return value;
 }
 
 const firstKey = (o: Obj, keys: string[]) => keys.find((k) => k in o && o[k] !== null && o[k] !== undefined && o[k] !== '');
@@ -77,6 +70,9 @@ function parseJson(raw: string): ParsedReport {
     // rawLine: where each item's pretty-printed text starts in `raw` (1 when raw is not pretty-printed).
     let cursor = 0;
     let line = 1;
+    // After the first item that cannot be located (minified or re-formatted JSON) every later rawLine is 1:
+    // one failed search is O(input), a search per item would be O(items x input).
+    let mapping = true;
     const pad = ' '.repeat(located.indent);
     for (const item of located.items) {
       if (!isObj(item)) continue;
@@ -88,9 +84,9 @@ function parseJson(raw: string): ParsedReport {
         truncated = true;
         break;
       }
-      const pretty = JSON.stringify(item, null, 2).split('\n').join('\n' + pad);
-      const at = raw.indexOf(pretty, cursor);
       let rawLine = 1;
+      const at = mapping ? raw.indexOf(JSON.stringify(item, null, 2).split('\n').join('\n' + pad), cursor) : -1;
+      if (mapping && at < 0) mapping = false;
       if (at >= 0) {
         for (let i = cursor; i < at; i++) if (raw.charCodeAt(i) === 10) line++;
         cursor = at;
