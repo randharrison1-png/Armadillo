@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Download, FileDiff, FileQuestion, GitBranch, GitCompare, Info, Save } from 'lucide-react';
+import { AlertTriangle, Download, FileDiff, FileQuestion, GitBranch, GitCompare, Globe, Info, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
@@ -17,6 +17,7 @@ import type { Script, ScriptVersion, TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { draftKey, isDirty, useDrafts } from '@/features/workspace/drafts';
 import { getWorkspaceStore } from '@/features/workspace/store';
+import { PublishDialog } from '@/features/pastebin/PublishDialog';
 import { loadAdaptationOptions } from '@/features/proposals/actions';
 import type { AdaptationOptions } from '@/features/proposals/types';
 import { useProposeAdaptation } from '@/features/proposals/useProposeAdaptation';
@@ -74,6 +75,7 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
   const [conflict, setConflict] = useState<ScriptVersion | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [note, setNote] = useState('');
+  const [publishOpen, setPublishOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const noteId = useId();
@@ -256,6 +258,14 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
                 <Download aria-hidden className="size-4" />
                 Download
               </a>
+              <Button
+                variant="secondary"
+                onClick={() => setPublishOpen(true)}
+                title={dirty ? `Publishes a copy of saved v${current.version_no}, not your unsaved edits` : `Publish a copy of v${current.version_no} to the public pastebin`}
+              >
+                <Globe aria-hidden className="size-4" />
+                Publish to pastebin
+              </Button>
               {adaptReadme && !readOnly ? (
                 <Button
                   variant="secondary"
@@ -368,6 +378,12 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
           onRestore={(v) => setConfirm({ kind: 'restore', version: v })}
         />
       </div>
+
+      <PublishDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        initial={{ title: script.name, content: current.content, language: current.language, source: { name: script.name, versionNo: current.version_no } }}
+      />
 
       <Dialog open={!!confirm} onOpenChange={(o) => !o && setConfirm(null)}>
         <DialogContent>

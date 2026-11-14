@@ -1,5 +1,5 @@
 import 'server-only';
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
 
 /**
  * Symmetric encryption for secrets at rest (users' Claude API keys): AES-256-GCM with a random
@@ -101,4 +101,18 @@ export function decryptSecret(cipherText: string, context = ''): string {
     // Never surface the underlying error (it carries no secret, but keep one opaque failure mode).
     throw new SecretDecryptError();
   }
+}
+
+/**
+ * A 32-byte key for a purpose other than encrypting secrets, derived from KEY_ENCRYPTION_SECRET
+ * with HKDF-SHA256 (info = `label`), so each purpose gets an independent key and none reveals the
+ * encryption key. Throws KeyEncryptionConfigError when the secret is not configured.
+ */
+export function deriveKey(label: string): Buffer {
+  return Buffer.from(hkdfSync('sha256', encryptionKey(), 'armadillo.derived-key', label, 32));
+}
+
+/** HMAC-SHA256 (hex) of `value` under the key derived for `label`. */
+export function hmacWithDerivedKey(label: string, value: string): string {
+  return createHmac('sha256', deriveKey(label)).update(value, 'utf8').digest('hex');
 }

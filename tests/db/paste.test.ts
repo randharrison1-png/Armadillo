@@ -256,18 +256,18 @@ describe('service', () => {
     // metadata-only flip: seam sees STORED content and the new visibility
     await updatePasteFor(owner.id, { slug: s, visibility: 'public', acknowledgeSecrets: true });
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith({ userId: owner.id, action: 'update', content: 'stored body', visibility: 'public', prevVisibility: 'unlisted', expiresAt: null, acknowledgeSecrets: true });
+    expect(spy).toHaveBeenCalledWith(expect.anything(), { userId: owner.id, action: 'update', content: 'stored body', contentChanged: false, visibility: 'public', prevVisibility: 'unlisted', expiresAt: null, acknowledgeSecrets: true, secretsFingerprint: undefined });
 
     // removing an expiry also goes through the seam
     await updatePasteFor(owner.id, { slug: s, expiresAt: future(3600_000).toISOString() });
     spy.mockClear();
     await updatePasteFor(owner.id, { slug: s, expiresAt: null });
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ content: 'stored body', expiresAt: null, visibility: 'public', prevVisibility: 'public' }));
+    expect(spy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: 'stored body', expiresAt: null, visibility: 'public', prevVisibility: 'public' }));
 
     // content edit passes the new content
     spy.mockClear();
     await updatePasteFor(owner.id, { slug: s, content: 'new body' });
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ content: 'new body' }));
+    expect(spy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ content: 'new body', contentChanged: true }));
 
     // a rejection blocks the flip and nothing is written or logged
     await updatePasteFor(owner.id, { slug: s, visibility: 'unlisted' });

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Bot, Clipboard, Copy, Download, ExternalLink, Loader2, type LucideIcon } from 'lucide-react';
+import { Bot, Clipboard, Copy, Download, ExternalLink, Globe, Loader2, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
@@ -16,7 +16,8 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { getContextStore } from '@/features/claude/contextSelection';
 import { OS_LABEL } from '@/features/sessions/schema';
-import { duplicateScriptAction, getScriptContent } from './actions';
+import { PublishDialog, type PublishInitial } from '@/features/pastebin/PublishDialog';
+import { duplicateScriptAction, getPublishSource, getScriptContent } from './actions';
 import { CATEGORY_LABEL, FUNCTION_LABEL } from './filters';
 import { downloadHref } from './scriptTabs';
 import type { ScriptListItem } from './service';
@@ -106,6 +107,22 @@ function UseInClaude({ script, sessions }: { script: ScriptListItem; sessions: S
 function RowActions({ script, sessions }: { script: ScriptListItem; sessions: SessionChoice[] }) {
   const [copying, setCopying] = useState(false);
   const [clipping, setClipping] = useState(false);
+  const [loadingPublish, setLoadingPublish] = useState(false);
+  const [publish, setPublish] = useState<PublishInitial | null>(null);
+
+  // Loads the text for the dialog only; nothing is published until the user presses Publish in it.
+  const openPublish = async () => {
+    setLoadingPublish(true);
+    try {
+      const r = await getPublishSource(script.id);
+      if (!r.ok) throw new Error(r.error);
+      setPublish({ title: script.name, content: r.content, language: r.language, source: { name: r.name, versionNo: r.versionNo } });
+    } catch {
+      toast.error('Could not open the publish dialog. Try again.');
+    } finally {
+      setLoadingPublish(false);
+    }
+  };
 
   const copy = async () => {
     setCopying(true);
@@ -151,6 +168,8 @@ function RowActions({ script, sessions }: { script: ScriptListItem; sessions: Se
       <ActionButton label="Copy" icon={Copy} busy={copying} onClick={copy} />
       <ActionButton label="Copy to clipboard" icon={Clipboard} busy={clipping} onClick={toClipboard} />
       <UseInClaude script={script} sessions={sessions} />
+      {script.current_version_id ? <ActionButton label="Publish to pastebin" icon={Globe} busy={loadingPublish} onClick={() => void openPublish()} /> : null}
+      {publish ? <PublishDialog open initial={publish} onOpenChange={(o) => !o && setPublish(null)} /> : null}
     </div>
   );
 }

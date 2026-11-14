@@ -3,7 +3,7 @@ import { withAnon, withUser } from '@/server/db/withUser';
 import { logActivity } from '@/server/activity';
 import type { ScriptLanguage } from '@/lib/types';
 import { validateForPublish } from './publish';
-import { PAGE_SIZE, SLUG_RE, updatePasteSchema, type PasteVisibility, type UpdatePasteInput } from './schema';
+import { PAGE_SIZE, SLUG_RE, updatePasteSchema, type OwnPaste, type OwnPasteWithContent, type PasteVisibility, type UpdatePasteInput } from './schema';
 
 /** A live paste as the public sees it. Never carries owner_id. */
 export type PublicPaste = {
@@ -27,17 +27,7 @@ export type PasteListItem = {
   preview: string;
 };
 
-export type OwnPaste = {
-  slug: string;
-  title: string | null;
-  language: ScriptLanguage;
-  visibility: PasteVisibility;
-  expires_at: Date | null;
-  deleted_at: Date | null;
-  created_at: Date;
-  updated_at: Date;
-};
-export type OwnPasteWithContent = OwnPaste & { content: string };
+export type { OwnPaste, OwnPasteWithContent } from './schema';
 
 export class PasteNotFoundError extends Error {
   constructor() {
@@ -147,14 +137,16 @@ export async function updatePasteFor(userId: string, input: UpdatePasteInput): P
       from paste.pastes where slug = ${p.slug} and owner_id = auth.uid() and deleted_at is null for update`;
     if (!cur) throw new PasteNotFoundError();
     if (cols.length === 0) return cur;
-    await validateForPublish({
+    await validateForPublish(tx, {
       userId,
       action: 'update',
       content: p.content ?? cur.content,
+      contentChanged: p.content !== undefined && p.content !== cur.content,
       visibility: p.visibility ?? cur.visibility,
       prevVisibility: cur.visibility,
       expiresAt: p.expiresAt === undefined ? cur.expires_at : p.expiresAt === null ? null : new Date(p.expiresAt),
       acknowledgeSecrets: p.acknowledgeSecrets,
+      secretsFingerprint: p.secretsFingerprint,
     });
     const [row] = await tx<OwnPasteWithContent[]>`
       update paste.pastes set ${tx(changes as never, ...cols)}

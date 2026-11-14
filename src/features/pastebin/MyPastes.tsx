@@ -4,19 +4,20 @@ import { useEffect, useState, useTransition } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, ClipboardList, Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, ClipboardList, Pencil, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { LoadingState } from '@/components/shell/states/LoadingState';
 import { EmptyState } from '@/components/shell/states/EmptyState';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { fieldClass, Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import type { ScriptLanguage } from '@/lib/types';
+import type { SecretFinding } from '@/lib/secrets';
 import { deletePaste, loadOwnPaste, updatePaste, type PasteFieldErrors } from './actions';
-import { pasteDate, pasteDateTime, pasteTitle } from './format';
-import { LANGUAGE_LABEL, PASTE_LANGUAGES, type PasteVisibility } from './schema';
-import type { OwnPasteWithContent } from './service';
+import { pasteDate, pasteDateTime, pasteTitle, retryMessage } from './format';
+import { SecretsWarning } from './SecretsWarning';
+import { LANGUAGE_LABEL, PASTE_LANGUAGES, type OwnPasteWithContent, type PasteVisibility } from './schema';
 
 // Same editor as the script library (Monaco, local bundle), loaded only in the browser.
 const CodeEditor = dynamic(() => import('@/features/library/monaco/CodeEditor').then((m) => m.CodeEditor), {
@@ -65,7 +66,13 @@ export function MyPastes({ pastes, initialEdit, initialDelete }: { pastes: MyPas
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-col gap-1">
-        <h1 className="text-h1 font-semibold text-text">My pastes</h1>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-h1 font-semibold text-text">My pastes</h1>
+          <Link href="/p/new" className={buttonVariants({ variant: 'secondary' })}>
+            <Plus aria-hidden className="size-4" />
+            New paste
+          </Link>
+        </div>
         <p className="text-small text-muted">Pastes you published. Public pastes are searchable; unlisted pastes are reachable only by their link.</p>
       </div>
 
@@ -172,7 +179,7 @@ function DeleteDialog({ row, onClose }: { row: MyPasteRow; onClose: () => void }
                   onClose();
                   router.replace('/app/pastes');
                   router.refresh();
-                } else setError(r.errors.form ?? 'Could not delete the paste.');
+                } else setError(('errors' in r && r.errors.form) || 'Could not delete the paste.');
               })
             }
           >
@@ -238,6 +245,8 @@ function EditForm({ paste, onClose, onSaved }: { paste: OwnPasteWithContent; onC
   const [expiry, setExpiry] = useState<string>('keep');
   const [content, setContent] = useState(paste.content);
   const [errors, setErrors] = useState<PasteFieldErrors>({});
+  const [secrets, setSecrets] = useState<{ findings: SecretFinding[]; fingerprint: string } | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [pending, start] = useTransition();
   const [eol] = useState(() => detectEol(paste.content));
   const label = 'text-small font-medium text-text';
@@ -251,10 +260,21 @@ function EditForm({ paste, onClose, onSaved }: { paste: OwnPasteWithContent; onC
         content,
         language,
         visibility,
+        ...(secrets && acknowledged ? { acknowledgeSecrets: true, secretsFingerprint: secrets.fingerprint } : {}),
         ...(expiry === 'never' ? { expiresAt: null } : preset && 'ms' in preset ? { expiresAt: new Date(Date.now() + preset.ms).toISOString() } : {}),
       });
-      if (r.ok) onSaved();
-      else setErrors(r.errors);
+      if (r.ok) return onSaved();
+      if ('refusal' in r) {
+        const f = r.refusal;
+        if (f.code === 'secrets') {
+          // A new fingerprint means different findings: the earlier tick no longer applies.
+          if (f.fingerprint !== secrets?.fingerprint) setAcknowledged(false);
+          setSecrets({ findings: f.findings, fingerprint: f.fingerprint });
+          setErrors({});
+        } else {
+          setErrors({ form: f.code === 'rate_limited' ? `You have made a lot of changes recently. ${retryMessage(f.retryAfter)}` : 'Could not save the paste.' });
+        }
+      } else setErrors(r.errors);
     });
   }
 
@@ -320,12 +340,13 @@ function EditForm({ paste, onClose, onSaved }: { paste: OwnPasteWithContent; onC
         </div>
         <FieldError message={errors.content} />
       </div>
+      {secrets ? <SecretsWarning findings={secrets.findings} acknowledged={acknowledged} onAcknowledgedChange={setAcknowledged} /> : null}
       <FieldError message={errors.form} />
       <DialogFooter>
         <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button type="submit" loading={pending}>
+        <Button type="submit" loading={pending} disabled={Boolean(secrets) && !acknowledged}>
           Save changes
         </Button>
       </DialogFooter>

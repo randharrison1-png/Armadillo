@@ -15,6 +15,9 @@ export default async function PublicLayout({ children }: { children: ReactNode }
             <Link href="/p" className={link}>
               Pastebin
             </Link>
+            <Link href="/p/new" className={link}>
+              New paste
+            </Link>
           </nav>
           {user ? (
             <div className="flex items-center gap-2">

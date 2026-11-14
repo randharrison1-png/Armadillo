@@ -2,6 +2,7 @@
 
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { safeNext } from '@/lib/safeNext';
 import { authMode } from './index';
 import { createSupabaseServerClient } from './supabase';
 import { normalizeEmail, testSignIn, testSignOut } from './testAuth';
@@ -16,7 +17,7 @@ export async function signInWithEmail(_prev: AuthFormState, formData: FormData):
   const email = normalizeEmail(formData.get('email'));
   if (!email) return { error: INVALID_EMAIL };
   await testSignIn(email);
-  redirect('/app');
+  redirect(safeNext(formData.get('next')));
 }
 
 function credentials(formData: FormData): { email: string; password: string } | { error: string } {
@@ -35,7 +36,7 @@ export async function signInWithPassword(_prev: AuthFormState, formData: FormDat
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithPassword(input);
   if (error) return { error: 'Email or password is incorrect.' };
-  redirect('/app');
+  redirect(safeNext(formData.get('next')));
 }
 
 /** Supabase provider: create an account. Signs in directly unless email confirmation is required. */
@@ -54,7 +55,7 @@ export async function signUpWithPassword(_prev: AuthFormState, formData: FormDat
     return { error: error.code === 'weak_password' ? error.message : 'Could not create an account with that email and password.' };
   }
   if (!data.session) return { message: 'Check your email to confirm your account, then sign in.' };
-  redirect('/app');
+  redirect(safeNext(formData.get('next')));
 }
 
 /** Clears the session for whichever provider is active, then returns to /login. */

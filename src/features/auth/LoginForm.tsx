@@ -51,18 +51,21 @@ function AuthForm({
   submitLabel,
   icon,
   passwordAutoComplete,
+  next,
 }: {
   action: Action;
   withPassword: boolean;
   submitLabel: string;
   icon: React.ReactNode;
   passwordAutoComplete?: string;
+  next?: string;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const invalid = Boolean(state.error) || undefined;
   return (
     // noValidate: validation happens on the server so the error state is consistent.
     <form action={formAction} noValidate className="flex flex-col gap-4">
+      {next ? <input type="hidden" name="next" value={next} /> : null}
       <Field label="Email" name="email" type="email" autoComplete="email" required aria-invalid={invalid} />
       {withPassword ? (
         <Field
@@ -84,12 +87,13 @@ function AuthForm({
   );
 }
 
-export function LoginForm({ mode }: { mode: AuthMode }) {
+/** `next`: where to go after signing in (already validated by the page with safeNext). */
+export function LoginForm({ mode, next }: { mode: AuthMode; next?: string }) {
   const [view, setView] = useState<'sign-in' | 'sign-up'>('sign-in');
 
   if (mode === 'test') {
     return (
-      <AuthForm action={signInWithEmail} withPassword={false} submitLabel="Sign in" icon={<LogIn aria-hidden className="size-4" />} />
+      <AuthForm action={signInWithEmail} withPassword={false} submitLabel="Sign in" icon={<LogIn aria-hidden className="size-4" />} next={next} />
     );
   }
 
@@ -101,6 +105,7 @@ export function LoginForm({ mode }: { mode: AuthMode }) {
           action={signInWithPassword}
           withPassword
           passwordAutoComplete="current-password"
+          next={next}
           submitLabel="Sign in"
           icon={<LogIn aria-hidden className="size-4" />}
         />
@@ -110,6 +115,7 @@ export function LoginForm({ mode }: { mode: AuthMode }) {
           action={signUpWithPassword}
           withPassword
           passwordAutoComplete="new-password"
+          next={next}
           submitLabel="Create account"
           icon={<UserPlus aria-hidden className="size-4" />}
         />

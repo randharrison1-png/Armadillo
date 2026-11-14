@@ -4,6 +4,7 @@ import { buttonVariants } from '@/components/ui/button';
 import { highlightCode, MAX_HIGHLIGHT_CHARS } from './highlight';
 import { pasteDateTime, pasteTitle } from './format';
 import { PasteFrame } from './PasteFrame';
+import { ReportAbuse } from './ReportAbuse';
 import { LANGUAGE_LABEL } from './schema';
 import type { PublicPaste } from './service';
 
@@ -53,6 +54,9 @@ export async function PasteView({ paste, isOwner }: { paste: PublicPaste; isOwne
           </>
         )}
       </PasteFrame>
+      <footer>
+        <ReportAbuse slug={paste.slug} />
+      </footer>
     </article>
   );
 }

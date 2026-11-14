@@ -11,7 +11,7 @@ import {
   verifyStoredUpload,
   type UploadTarget,
 } from '@/server/files/storage';
-import type { Script } from '@/lib/types';
+import type { Script, ScriptLanguage } from '@/lib/types';
 import { createScriptSchema, type CreateScriptInput, type ScriptMeta } from './schema';
 import { createScriptFor, createScriptFromUploadFor, duplicateScriptFor, getScriptWithContentFor } from './service';
 
@@ -109,6 +109,24 @@ export async function duplicateScriptAction(scriptId: string): Promise<ScriptRes
   } catch (e) {
     if (isControlFlow(e)) throw e;
     return { ok: false, errors: { form: e instanceof Error && e.message === 'Script not found' ? 'That script no longer exists.' : 'Could not copy the script. Try again.' } };
+  }
+}
+
+/**
+ * What "Publish to pastebin" shows in the publish dialog: the script's name, its current version
+ * number and text, and the language, read for the signed-in owner only. Nothing is published here.
+ */
+export async function getPublishSource(
+  scriptId: string,
+): Promise<{ ok: true; name: string; versionNo: number; content: string; language: ScriptLanguage } | { ok: false; error: string }> {
+  try {
+    const user = await requireUser();
+    const found = await getScriptWithContentFor(user.id, scriptId);
+    if (!found) return { ok: false, error: 'That script no longer exists.' };
+    return { ok: true, name: found.script.name, versionNo: found.version.version_no, content: found.version.content, language: found.version.language };
+  } catch (e) {
+    if (isControlFlow(e)) throw e;
+    return { ok: false, error: 'Could not load the script. Try again.' };
   }
 }
 
