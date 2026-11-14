@@ -4,6 +4,7 @@ import { SetInspector } from '@/components/shell/inspectorStore';
 import { WorkspaceTabs } from '@/components/shell/WorkspaceTabs';
 import { ReadmeIntakeHost } from '@/features/readme/ReadmeIntake';
 import { ReadmeInspectorSection } from '@/features/readme/ReadmeInspectorSection';
+import { RequirementsInspectorSection } from '@/features/requirements/RequirementsInspectorSection';
 import { getReadmeOverview } from '@/features/readme/queries';
 import { stageLabel } from '@/features/flowchart/stepMeta';
 import { STEP_STATUS_LABEL } from '@/lib/types';
@@ -11,6 +12,9 @@ import { OS_LABEL } from '@/features/sessions/schema';
 import { getSession } from '@/features/sessions/queries';
 
 export const metadata: Metadata = { title: 'Session · Armadillo' };
+// Server actions on this page include structured Claude calls (requirements extraction and
+// assessment), which can take minutes; the Anthropic client times out at 270 s.
+export const maxDuration = 300;
 
 type Props = { params: Promise<{ sessionId: string }> };
 
@@ -73,6 +77,11 @@ export default async function SessionPage({ params }: Props) {
                 items={readmeItems}
               />
             ),
+          },
+          {
+            id: 'requirements',
+            title: 'Requirements',
+            content: <RequirementsInspectorSection sessionId={session.id} />,
           },
         ]}
       />

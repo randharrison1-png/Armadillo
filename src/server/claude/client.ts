@@ -1,5 +1,6 @@
 import 'server-only';
 import Anthropic from '@anthropic-ai/sdk';
+import { z, type ZodType } from 'zod';
 import { encodeSseEvent, SSE_PING } from '@/lib/sse';
 import type { ResourceRef } from '@/lib/types';
 import type { ConversationMode } from '@/server/db/types';
@@ -28,6 +29,10 @@ import { prepareTurn, readReply, ReplyWriter, tokenUsageOf, trimmedOf, TurnError
  * button is different: it marks the reply stopped in the database (stopReplyFor), the run notices
  * on its next save, aborts the upstream request and keeps the partial text as an 'error' reply that
  * can be retried.
+ *
+ * Structured calls (callClaudeTool): one non-streaming request that forces a single tool, whose
+ * input is validated with Zod; invalid input gets one automatic retry carrying the validation error,
+ * then StructuredOutputError (plan §6). Same key/model resolution and context assembly as chat.
  */
 
 export const DEFAULT_MODEL = 'claude-sonnet-5-5';
@@ -181,6 +186,142 @@ export async function* streamUpstream(p: {
   if (p.signal?.aborted) throw new ClaudeUpstreamError('stopped', 'Stopped.', true);
   if (!finished) throw new ClaudeUpstreamError('connection', 'The connection to Claude closed before the reply finished. Retry to try again.', true);
   return { model, usage, stopReason };
+}
+
+// ------------------------------------------------------------------------------------------------
+// Structured output: forced tool use, validated with Zod
+// ------------------------------------------------------------------------------------------------
+
+/** A tool whose only purpose is to carry Claude's structured answer (it never reads data). */
+export type ClaudeTool = { name: string; description: string; input_schema: Record<string, unknown> };
+
+const STRUCTURED_ISSUES_MAX = 2000;
+
+/** Claude's answer did not match the schema, even after the one automatic retry. Message is user-facing. */
+export class StructuredOutputError extends Error {
+  readonly name = 'StructuredOutputError';
+  readonly code = 'structured_output';
+  constructor(
+    /** What was wrong with the last answer (for logs; may quote Claude's output, never shown raw). */
+    readonly issues: string,
+  ) {
+    super("Claude's answer was not in the expected format, even after one automatic retry. Try again.");
+  }
+}
+
+type Attempt = { ok: true; data: unknown } | { ok: false; issues: string };
+
+function checkToolAnswer<T>(message: Anthropic.Message, tool: ClaudeTool, schema: ZodType<T>): { attempt: Attempt; toolUse: Anthropic.ToolUseBlock | null } {
+  const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === tool.name) ?? null;
+  if (message.stop_reason === 'max_tokens') {
+    return { toolUse, attempt: { ok: false, issues: 'The answer was cut off at the output limit. Keep every item short and call the tool once with the complete input.' } };
+  }
+  if (!toolUse) return { toolUse, attempt: { ok: false, issues: `No ${tool.name} tool call was made. Answer only by calling the ${tool.name} tool.` } };
+  const parsed = schema.safeParse(toolUse.input);
+  if (parsed.success) return { toolUse, attempt: { ok: true, data: parsed.data } };
+  return { toolUse, attempt: { ok: false, issues: z.prettifyError(parsed.error).slice(0, STRUCTURED_ISSUES_MAX) } };
+}
+
+/** The assistant turn to replay before a retry: Claude's text and tool calls only. */
+function replayBlocks(message: Anthropic.Message): Anthropic.ContentBlockParam[] {
+  const out: Anthropic.ContentBlockParam[] = [];
+  for (const b of message.content) {
+    if (b.type === 'text' && b.text) out.push({ type: 'text', text: b.text });
+    else if (b.type === 'tool_use') out.push({ type: 'tool_use', id: b.id, name: b.name, input: b.input });
+  }
+  return out.length ? out : [{ type: 'text', text: '(no answer)' }];
+}
+
+/**
+ * One forced tool call (no streaming, no database): `tool_choice` names the tool, the input is
+ * validated with `schema`; on invalid input (or no tool call, or a truncated answer) it retries ONCE,
+ * replaying Claude's answer followed by the validation error (as an error tool_result), then throws
+ * StructuredOutputError. Upstream failures throw ClaudeUpstreamError (scrubbed) and are not retried here.
+ */
+export async function runToolCall<T>(p: {
+  apiKey: string;
+  model: string;
+  system: string;
+  content: { type: 'text'; text: string }[];
+  tool: ClaudeTool;
+  schema: ZodType<T>;
+  maxTokens: number;
+}): Promise<{ data: T; model: string; usage: Usage; attempts: number }> {
+  const client = anthropicClient(p.apiKey);
+  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: p.content }];
+  const usage: Usage = { input_tokens: 0, output_tokens: 0 };
+  let model = p.model;
+  let issues = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let message: Anthropic.Message;
+    try {
+      message = await client.messages.create({
+        model: p.model,
+        max_tokens: p.maxTokens,
+        system: p.system,
+        messages,
+        tools: [{ name: p.tool.name, description: p.tool.description, input_schema: { type: 'object', ...p.tool.input_schema } }],
+        tool_choice: { type: 'tool', name: p.tool.name },
+      });
+    } catch (e) {
+      throw toUpstreamError(e, [p.apiKey]);
+    }
+    model = message.model || model;
+    usage.input_tokens += message.usage?.input_tokens ?? 0;
+    usage.output_tokens += message.usage?.output_tokens ?? 0;
+    const { attempt: result, toolUse } = checkToolAnswer(message, p.tool, p.schema);
+    if (result.ok) return { data: result.data as T, model, usage, attempts: attempt };
+    issues = result.issues;
+    const feedback = `Your ${p.tool.name} input was not valid:\n${issues}\nCall ${p.tool.name} again with corrected, complete input.`;
+    messages.push({ role: 'assistant', content: replayBlocks(message) });
+    messages.push({
+      role: 'user',
+      content: toolUse ? [{ type: 'tool_result', tool_use_id: toolUse.id, is_error: true, content: feedback }] : [{ type: 'text', text: feedback }],
+    });
+  }
+  throw new StructuredOutputError(issues);
+}
+
+export type ClaudeToolInput<T> = {
+  userId: string;
+  sessionId: string;
+  /** The ONLY resources Claude sees (checked against the session by buildContext). */
+  refs: ResourceRef[];
+  /** The task, given this request's nonce (to name the `[seg-<nonce> <id>]` markers). */
+  instruction: (nonce: string) => string;
+  tool: ClaudeTool;
+  schema: ZodType<T>;
+  maxTokens?: number;
+};
+
+export type ClaudeToolResult<T> = { data: T; nonce: string; trimmed: ResourceRef[]; model: string; usage: Usage; attempts: number };
+
+/**
+ * A structured Claude call for a session: assembles the context from `refs` exactly like chat
+ * (ownership and session scope enforced, untrusted documents wrapped with a per-request nonce),
+ * resolves the key (BYO, else server) and model, and runs one forced tool call with one validation
+ * retry (runToolCall). Throws ForbiddenError, ClaudeKeyMissingError / ClaudeKeyUnreadableError,
+ * ClaudeUpstreamError or StructuredOutputError.
+ */
+export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<ClaudeToolResult<T>> {
+  const ctx = await buildContext({
+    userId: input.userId,
+    sessionId: input.sessionId,
+    refs: input.refs,
+    budgetTokens: numberEnv('CLAUDE_CONTEXT_TOKENS', DEFAULT_CONTEXT_TOKENS),
+  });
+  const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
+  const content = [...(ctx.documents ? [{ type: 'text' as const, text: ctx.documents }] : []), { type: 'text' as const, text: input.instruction(ctx.nonce) }];
+  const out = await runToolCall({
+    apiKey,
+    model: resolveModel(profileModel),
+    system: ctx.system,
+    content,
+    tool: input.tool,
+    schema: input.schema,
+    maxTokens: input.maxTokens ?? numberEnv('CLAUDE_TOOL_MAX_TOKENS', 16_000),
+  });
+  return { ...out, nonce: ctx.nonce, trimmed: ctx.trimmed };
 }
 
 /** Prior turns + the current prompt (documents first), merging into a trailing user turn if needed. */

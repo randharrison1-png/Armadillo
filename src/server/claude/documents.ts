@@ -84,12 +84,13 @@ function fenceFor(body: string): string {
   return '`'.repeat(Math.max(3, longest + 1));
 }
 
-const segmentId = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+/** A segment id as written in the markers (and so as Claude cites it): [A-Za-z0-9_-]{1,64}. */
+export const markerSegmentId = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
 
 /** The escaped body: segment texts escaped one by one and joined with the real (unescaped) markers. */
 export function escapedBodyOf(doc: RenderableDoc, nonce: string): string {
   if (!doc.segments) return escapeUntrusted(doc.body, nonce);
-  return doc.segments.map((s) => `[seg-${nonce} ${segmentId(s.id)}]\n${escapeUntrusted(s.text, nonce)}`).join('\n\n');
+  return doc.segments.map((s) => `[seg-${nonce} ${markerSegmentId(s.id)}]\n${escapeUntrusted(s.text, nonce)}`).join('\n\n');
 }
 
 /**

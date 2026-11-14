@@ -1,19 +1,20 @@
 'use client';
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { FileText, FileWarning } from 'lucide-react';
+import { FileText, FileWarning, ListChecks } from 'lucide-react';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
 import { LoadingState } from '@/components/shell/states/LoadingState';
 import { Button } from '@/components/ui/button';
 import { OS_LABEL } from '@/features/sessions/schema';
+import { openRequirements } from '@/features/requirements/matrix';
 import type { Segment, TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { loadReadmeView, type ReadmeView } from './actions';
+import { NO_TEXT_MESSAGE } from './messages';
 import { segmentDomId, useReadmeUi } from './readmeUi';
 
-/** Shown verbatim when a PDF has no text layer. */
-export const NO_TEXT_MESSAGE = 'No extractable text — paste the README instead';
+export { NO_TEXT_MESSAGE };
 
 const HIGHLIGHT_MS = 2000;
 /** Segments mounted at first; "Show more" (or openSegment) extends it. */
@@ -145,11 +146,19 @@ export function ReadmeTab({ namespace: sessionId, tab }: { namespace: string; ta
           <span aria-hidden>·</span>
           <span>{dateLabel(readme.created_at)}</span>
         </p>
-        {completed ? null : (
-          <Button variant="secondary" onClick={() => openIntake(sessionId, 'paste')}>
-            Add README
-          </Button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {readme.has_text_layer ? (
+            <Button variant="secondary" onClick={() => openRequirements(sessionId)}>
+              <ListChecks aria-hidden className="size-4" />
+              Requirements
+            </Button>
+          ) : null}
+          {completed ? null : (
+            <Button variant="secondary" onClick={() => openIntake(sessionId, 'paste')}>
+              Add README
+            </Button>
+          )}
+        </div>
       </header>
       {!readme.has_text_layer ? (
         <div role="status" className="flex flex-col items-start gap-2 rounded-sm border border-border bg-surface p-4">

@@ -29,6 +29,10 @@ const ClaudeTab = dynamic(() => import('@/features/claude/ClaudeTab').then((m) =
   ssr: false,
   loading: () => <LoadingState label="Loading Claude" />,
 });
+const RequirementsTab = dynamic(() => import('@/features/requirements/RequirementsTab').then((m) => m.RequirementsTab), {
+  ssr: false,
+  loading: () => <LoadingState label="Loading requirements" />,
+});
 const VersionDiffTab = dynamic(() => import('@/features/library/VersionDiffTab').then((m) => m.VersionDiffTab), {
   ssr: false,
   loading: () => <LoadingState label="Loading comparison" />,
@@ -58,9 +62,10 @@ export function TabBody({ tab, namespace }: { tab: TabDescriptor; namespace: str
       return <ReadmeTab tab={tab} namespace={namespace} />;
     case 'claude':
       return <ClaudeTab tab={tab} namespace={namespace} />;
+    case 'requirements':
+      return <RequirementsTab tab={tab} namespace={namespace} />;
     case 'flowchart':
     case 'report':
-    case 'requirements':
       return <EmptyState icon={TAB_ICONS[tab.kind]} title={tab.title} description="Nothing here yet." />;
   }
 }

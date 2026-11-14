@@ -127,7 +127,12 @@ export type Requirement = Mutable & {
   automatable: boolean;
   script_version_id: string | null;
   evidence_report_id: string | null;
+  /** The user's own notes. */
   notes: string | null;
+  /** Claude's classification at extraction (0004b). */
+  category: string | null;
+  /** Claude's suggested change from the last coverage assessment (0004b). */
+  suggestion: string | null;
 };
 
 /** proposals — status 'accepted' requires result_version_id. */

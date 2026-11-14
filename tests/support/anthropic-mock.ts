@@ -8,6 +8,11 @@
  * - Scriptable: queue responses with `enqueue(...)`. Each request takes the first queued response
  *   whose `match` is a substring of the request's last user message (or has no `match`); with no
  *   queued response it replies "Mock reply: <last user text>" in a few chunks.
+ * - Tool use (non-streaming calls): `{ toolUse: { input } }` answers with one `tool_use` content block
+ *   (name = `toolUse.name`, else the request's forced `tool_choice.name`, else its first tool) and
+ *   stop_reason 'tool_use'. `stopReason` overrides the stop reason (e.g. 'max_tokens').
+ *   `match` also sees the text of `tool_result` blocks, so a structured-output retry (whose last
+ *   user turn is a tool_result carrying the validation error) can be matched.
  * - Failures: `{ fail: { status: 529 } }` before the stream starts (HTTP error with an Anthropic
  *   error body), or `{ chunks, failAfter: n, failWith: 'overloaded' | 'api_error' | 'drop' }` to fail
  *   mid-stream after n chunks (an SSE `error` event, as the real API reports a 529 once streaming
@@ -42,6 +47,10 @@ export type MockResponse = {
   failWith?: 'overloaded' | 'api_error' | 'drop';
   /** Use this response for this many requests (default 1). */
   times?: number;
+  /** Non-streaming only: answer with a tool_use block carrying this input. */
+  toolUse?: { name?: string; input: unknown };
+  /** Non-streaming only: overrides stop_reason ('end_turn', or 'tool_use' with toolUse). */
+  stopReason?: string;
 };
 
 export type RecordedRequest = {
@@ -85,13 +94,25 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-type Body = { model?: string; stream?: boolean; messages?: { role: string; content: unknown }[] };
+type Body = {
+  model?: string;
+  stream?: boolean;
+  messages?: { role: string; content: unknown }[];
+  tools?: { name?: string }[];
+  tool_choice?: { type?: string; name?: string };
+};
 
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .map((b) => (b && typeof b === 'object' && (b as { type?: string }).type === 'text' ? String((b as { text?: unknown }).text ?? '') : ''))
+      .map((b) => {
+        if (!b || typeof b !== 'object') return '';
+        const block = b as { type?: string; text?: unknown; content?: unknown };
+        if (block.type === 'text') return String(block.text ?? '');
+        if (block.type === 'tool_result') return textOf(block.content);
+        return '';
+      })
       .join('\n');
   }
   return '';
@@ -182,6 +203,16 @@ export async function startAnthropicMock(opts: { port?: number; host?: string } 
     }
 
     if (!body?.stream) {
+      const content = r.toolUse
+        ? [
+            {
+              type: 'tool_use',
+              id: `toolu_mock_${counter}`,
+              name: r.toolUse.name ?? body?.tool_choice?.name ?? body?.tools?.[0]?.name ?? 'tool',
+              input: r.toolUse.input,
+            },
+          ]
+        : [{ type: 'text', text: chunks.join('') }];
       res.writeHead(200, { 'content-type': 'application/json', 'request-id': requestId });
       res.end(
         JSON.stringify({
@@ -189,8 +220,8 @@ export async function startAnthropicMock(opts: { port?: number; host?: string } 
           type: 'message',
           role: 'assistant',
           model,
-          content: [{ type: 'text', text: chunks.join('') }],
-          stop_reason: 'end_turn',
+          content,
+          stop_reason: r.stopReason ?? (r.toolUse ? 'tool_use' : 'end_turn'),
           stop_sequence: null,
           usage,
         }),

@@ -45,7 +45,8 @@ const COLUMNS: ColumnSet = {
   },
   requirements: {
     id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, readme_id: t, text: t, segment_id: t, coverage: t,
-    work_state: t, disruptive: t, automatable: t, script_version_id: t, evidence_report_id: t, notes: t,
+    work_state: t, disruptive: t, automatable: t, script_version_id: t, evidence_report_id: t, notes: t, category: t,
+    suggestion: t,
   },
   proposals: {
     id: t, owner_id: t, created_at: t, updated_at: t, conversation_id: t, session_id: t, kind: t, base_version_id: t,
