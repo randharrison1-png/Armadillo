@@ -47,3 +47,7 @@ $$;
 
 grant usage on schema auth to anon, authenticated, service_role;
 grant execute on function auth.uid(), auth.jwt() to anon, authenticated, service_role;
+
+-- Account deletion (Task 21) removes the user with a plain `delete from auth.users` as service_role
+-- in the test environment (hosted Supabase uses the Auth admin API instead).
+grant select, delete on auth.users to service_role;

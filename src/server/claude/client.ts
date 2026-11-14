@@ -5,6 +5,7 @@ import { encodeSseEvent, SSE_PING } from '@/lib/sse';
 import type { ResourceRef } from '@/lib/types';
 import type { ConversationMode } from '@/server/db/types';
 import type { ClaudeStreamEvents } from '@/features/claude/types';
+import type { TestConnectionResult } from '@/features/settings/schema';
 import { KeyEncryptionConfigError } from '@/server/security/crypto';
 import { buildContext, ForbiddenError } from './context';
 import { renderDataBlock, type DataBlock } from './documents';
@@ -293,6 +294,35 @@ export async function runToolCall<T>(p: {
     });
   }
   throw new StructuredOutputError(issues);
+}
+
+export type ConnectionTestResult = TestConnectionResult;
+
+/**
+ * Settings "Test connection": one minimal request (max_tokens 1, no documents, no database content)
+ * with the key and model chat would use. Reports ok / invalid key / network error / no key and never
+ * echoes the key: failure messages are the gateway's fixed, scrubbed texts.
+ */
+export async function testClaudeConnection(userId: string): Promise<ConnectionTestResult> {
+  let resolved;
+  try {
+    resolved = await resolveClaudeKeyFor(userId);
+  } catch (e) {
+    if (e instanceof ClaudeKeyMissingError) return { status: 'no_key' };
+    if (e instanceof ClaudeKeyUnreadableError) return { status: 'invalid_key' };
+    if (e instanceof KeyEncryptionConfigError) return { status: 'error', message: 'Key storage is not configured on this server.' };
+    throw e;
+  }
+  const model = resolveModel(resolved.profileModel);
+  try {
+    const message = await anthropicClient(resolved.apiKey).messages.create({ model, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
+    return { status: 'ok', model: message.model || model, source: resolved.source };
+  } catch (e) {
+    const err = toUpstreamError(e, [resolved.apiKey]);
+    if (err.code === 'auth') return { status: 'invalid_key' };
+    if (err.code === 'connection' || err.code === 'timeout') return { status: 'network' };
+    return { status: 'error', message: scrubSecrets(err.message, [resolved.apiKey]) };
+  }
 }
 
 export type ClaudeToolInput<T> = {

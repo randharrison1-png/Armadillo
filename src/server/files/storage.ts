@@ -1,6 +1,6 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { requireUser } from '@/server/auth';
@@ -15,6 +15,8 @@ export interface FileStore {
   removePrefix(prefix: string): Promise<void>;
   /** Size of the stored object, or null if it does not exist. */
   stat(path: string): Promise<{ size: number } | null>;
+  /** Every object path under `prefix` (recursive, bucket-relative, `/`-separated); [] if there are none. */
+  list(prefix: string): Promise<string[]>;
 }
 
 export type UploadScope = { sessionId?: string; kind: UploadKind };
@@ -73,6 +75,25 @@ export class LocalFileStore implements FileStore {
   async removePrefix(prefix: string): Promise<void> {
     await rm(this.resolve(prefix), { recursive: true, force: true });
   }
+  async list(prefix: string): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (rel: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(this.resolve(rel), { withFileTypes: true });
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return;
+        throw e;
+      }
+      for (const e of entries) {
+        if (e.isDirectory()) await walk(`${rel}/${e.name}`);
+        else if (e.isFile()) out.push(`${rel}/${e.name}`);
+      }
+    };
+    await walk(prefix);
+    return out.sort();
+  }
 }
 
 export const PRIVATE_BUCKET = 'private-files';
@@ -100,7 +121,7 @@ export class SupabaseFileStore implements FileStore {
     const size = (hit?.metadata as { size?: number } | null | undefined)?.size;
     return hit && typeof size === 'number' ? { size } : null;
   }
-  async removePrefix(prefix: string): Promise<void> {
+  async list(prefix: string): Promise<string[]> {
     assertSafePath(prefix);
     const bucket = this.client.storage.from(PRIVATE_BUCKET);
     const files: string[] = [];
@@ -117,6 +138,11 @@ export class SupabaseFileStore implements FileStore {
       }
     };
     await walk(prefix);
+    return files;
+  }
+  async removePrefix(prefix: string): Promise<void> {
+    const files = await this.list(prefix);
+    const bucket = this.client.storage.from(PRIVATE_BUCKET);
     for (let i = 0; i < files.length; i += 100) {
       const { error } = await bucket.remove(files.slice(i, i + 100));
       if (error) throw new Error(`Storage remove failed: ${error.message}`);
