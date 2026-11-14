@@ -21,6 +21,10 @@ const ScriptEditorTab = dynamic(() => import('@/features/library/ScriptEditorTab
   ssr: false,
   loading: () => <LoadingState label="Loading editor" />,
 });
+const ReadmeTab = dynamic(() => import('@/features/readme/ReadmeTab').then((m) => m.ReadmeTab), {
+  ssr: false,
+  loading: () => <LoadingState label="Loading README" />,
+});
 const VersionDiffTab = dynamic(() => import('@/features/library/VersionDiffTab').then((m) => m.VersionDiffTab), {
   ssr: false,
   loading: () => <LoadingState label="Loading comparison" />,
@@ -46,8 +50,9 @@ export function TabBody({ tab, namespace }: { tab: TabDescriptor; namespace: str
       ) : (
         <EmptyState icon={TAB_ICONS.diff} title={tab.title} description="Nothing here yet." />
       );
-    case 'claude':
     case 'readme':
+      return <ReadmeTab tab={tab} namespace={namespace} />;
+    case 'claude':
     case 'flowchart':
     case 'report':
     case 'requirements':

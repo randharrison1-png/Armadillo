@@ -2,7 +2,11 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { SetInspector } from '@/components/shell/inspectorStore';
 import { WorkspaceTabs } from '@/components/shell/WorkspaceTabs';
+import { ReadmeIntakeHost } from '@/features/readme/ReadmeIntake';
+import { ReadmeInspectorSection } from '@/features/readme/ReadmeInspectorSection';
+import { getReadmeOverview } from '@/features/readme/queries';
 import { stageLabel } from '@/features/flowchart/stepMeta';
+import { STEP_STATUS_LABEL } from '@/lib/types';
 import { OS_LABEL } from '@/features/sessions/schema';
 import { getSession } from '@/features/sessions/queries';
 
@@ -14,6 +18,14 @@ export default async function SessionPage({ params }: Props) {
   const { sessionId } = await params;
   const session = await getSession(sessionId);
   if (!session) notFound();
+
+  const readmes = (await getReadmeOverview(sessionId)) ?? { readmes: [], openReadmeStatus: 'not_started' as const };
+  const completed = session.status === 'completed';
+  const readmeItems = readmes.readmes.map((r) => ({
+    id: r.id,
+    label: `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(r.created_at)} UTC · ${r.source === 'upload' ? (r.filename ?? 'file') : 'pasted'}`,
+    hasText: r.has_text_layer,
+  }));
 
   const stage = stageLabel(session.status, session.currentStep);
   const created = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(session.created_at);
@@ -34,7 +46,7 @@ export default async function SessionPage({ params }: Props) {
         <WorkspaceTabs sessionId={session.id} />
       </div>
       <SetInspector
-        version={`${session.updated_at.toISOString()}|${stage}`}
+        version={`${session.updated_at.toISOString()}|${stage}|${readmeItems.map((r) => r.id).join(',')}|${readmes.openReadmeStatus}`}
         sections={[
           {
             id: 'session',
@@ -50,8 +62,21 @@ export default async function SessionPage({ params }: Props) {
               </dl>
             ),
           },
+          {
+            id: 'readme',
+            title: 'README',
+            content: (
+              <ReadmeInspectorSection
+                sessionId={session.id}
+                completed={completed}
+                stepLabel={STEP_STATUS_LABEL[readmes.openReadmeStatus]}
+                items={readmeItems}
+              />
+            ),
+          },
         ]}
       />
+      <ReadmeIntakeHost sessionId={session.id} />
     </div>
   );
 }
