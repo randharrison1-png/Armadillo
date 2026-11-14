@@ -17,7 +17,7 @@ const notesInput = z.object({ sessionId: z.string().regex(UUID_RE), step: stepKe
 export type ChangeStatusInput = { sessionId: string; step: StepKey; status: StepStatus; note?: string };
 
 async function openSession(tx: Tx, sessionId: string): Promise<{ current_cycle: number }> {
-  const [s] = await tx<{ status: string; current_cycle: number }[]>`select status, current_cycle from public.sessions where id = ${sessionId}`;
+  const [s] = await tx<{ status: string; current_cycle: number }[]>`select status, current_cycle from public.sessions where id = ${sessionId} for no key update`;
   if (!s) throw new FlowchartError('Session not found');
   if (s.status === 'completed') throw new FlowchartError(READ_ONLY_MESSAGE);
   return s;

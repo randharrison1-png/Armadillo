@@ -111,3 +111,44 @@ describe('setStepStatusTx evidence guard', () => {
     await expect(verify(s.id, 'run_hardening')).rejects.toThrow('Workflow step not found');
   });
 });
+
+describe('setStepStatusTx concurrency (lock order: session row, then step row)', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('two concurrent changes to different steps of one session both succeed (no deadlock)', async () => {
+    for (let i = 0; i < 5; i++) {
+      const s = await fresh();
+      const results = await Promise.allSettled([
+        setStepStatus({ sessionId: s.id, step: 'open_readme', status: 'in_progress' }),
+        setStepStatus({ sessionId: s.id, step: 'forensic_questions', status: 'in_progress' }),
+        setStepStatus({ sessionId: s.id, step: 'claude_adaptation', status: 'blocked' }),
+      ]);
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled', 'fulfilled']);
+    }
+  });
+
+  it('a guarded verify waits for a concurrent cycle bump and checks the new cycle', async () => {
+    const s = await fresh();
+    await sql`insert into public.leads_reports (owner_id, session_id, cycle_no, filename) values (${current.id}, ${s.id}, 1, 'c1.txt')`;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const bump = sql.begin(async (tx) => {
+      await tx`select 1 from public.sessions where id = ${s.id} for update`;
+      await tx`update public.sessions set current_cycle = current_cycle + 1 where id = ${s.id}`;
+      await held;
+    });
+    await sleep(150);
+    let settled = false;
+    const verify = setStepStatus({ sessionId: s.id, step: 'run_leads', status: 'verified' }).then(
+      () => ((settled = true), 'ok'),
+      (e: Error) => ((settled = true), e.message),
+    );
+    await sleep(300);
+    expect(settled).toBe(false); // serialized behind the bump
+    release();
+    await bump;
+    // Cycle 2 has no LEADS report: the cycle-1 report must not count.
+    expect(await verify).toBe('Attach evidence before marking this step Complete and Verified');
+    expect((await sql`select status from public.workflow_steps where session_id = ${s.id} and step = 'run_leads'`)[0]!.status).toBe('not_started');
+  });
+});

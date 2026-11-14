@@ -5,6 +5,10 @@ import { withUser, type Tx } from '@/server/db/withUser';
 import type { StepKey, StepStatus, WorkflowStep } from '@/lib/types';
 import { EVIDENCE_REQUIRED_MESSAGE, EVIDENCE_STEPS, FlowchartError, REPORT_STEPS } from './types';
 
+// LOCK ORDER (app-wide): lock the sessions row FIRST (FOR NO KEY UPDATE; FOR UPDATE only where
+// current_cycle/status change), THEN the workflow_steps row FOR UPDATE, then read current_cycle and
+// evidence and write. The workflow_steps_touch_session trigger updates the session row after a step
+// write, so taking step-then-session (or SHARE on the session) can deadlock (40P01). Tasks 17/18 follow this order.
 export { STEP_LABEL, STEP_ORDER, currentStep, stageLabel } from './stepMeta';
 
 /**
@@ -24,14 +28,12 @@ export type StepStatusInput = { sessionId: string; step: StepKey; status: StepSt
 /** setStepStatus inside the caller's transaction (`tx` from withUser), so it commits or rolls back with the caller's own writes. */
 export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<WorkflowStep> {
   {
-    // Lock order: step row, then session row (shared), so current_cycle and the evidence we check
-    // cannot change under us before the write commits.
+    const [session] = await tx<{ current_cycle: number }[]>`
+      select current_cycle from public.sessions where id = ${input.sessionId} for no key update`;
+    if (!session) throw new Error('Session not found');
     const [step] = await tx<WorkflowStep[]>`
       select * from public.workflow_steps where session_id = ${input.sessionId} and step = ${input.step}::public.step_key for update`;
     if (!step) throw new Error('Workflow step not found');
-    const [session] = await tx<{ current_cycle: number }[]>`
-      select current_cycle from public.sessions where id = ${input.sessionId} for share`;
-    if (!session) throw new Error('Session not found');
     if (step.status === input.status) return step;
     // Audit accuracy (spec 10): never record Complete and Verified without evidence.
     if (input.status === 'verified' && EVIDENCE_STEPS.includes(input.step) && !(await hasEvidence(tx, input.sessionId, input.step, session.current_cycle))) {
