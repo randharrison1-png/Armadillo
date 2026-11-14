@@ -289,7 +289,38 @@ describe('remediation cycle integrity', () => {
     expect(rowsBefore).toEqual([expect.objectContaining({ cycle_no: 1, proposal_id: p2.proposal.id, outcome: 'continued' })]);
     // The view still names the proposal after its own cycle and report.
     const view = await proposals.getProposalViewFor(w.userId, p2.proposal.id);
-    expect(view!.remediation).toEqual({ cycleNo: 1, title: 'Remediation — Cycle 1', reportId: report.id, reportFilename: 'leads.txt' });
+    expect(view!.remediation).toEqual({
+      cycleNo: 1, title: 'Remediation — Cycle 1', reportId: report.id, reportFilename: 'leads.txt',
+      acceptBlocked: 'This remediation was proposed for cycle 1 — propose again from the current report',
+    });
+  });
+
+  it('a pending remediation cannot be accepted once its audit is marked complete', async () => {
+    const w = await world();
+    const report = await addReport(w);
+    const { proposal } = await propose(w, report.id);
+    await sql`insert into public.evidence (owner_id, session_id, step, kind, note) values (${w.userId}, ${w.sessionId}, 'check_points', 'verification', '100 points')`;
+    await flowchart.changeStepStatusFor(w.userId, { sessionId: w.sessionId, step: 'check_points', status: 'verified' });
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'complete' });
+    const rowBefore = await sql`select * from public.remediation_cycles where session_id = ${w.sessionId}`;
+    expect(rowBefore).toEqual([expect.objectContaining({ cycle_no: 1, outcome: 'completed', proposal_id: proposal.id })]);
+
+    const err = await proposals
+      .acceptProposalFor(w.userId, { proposalId: proposal.id, acknowledgedFlagIds: proposal.flags.map((f: HighImpactFlag) => f.id) })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(proposals.AuditCompleteError);
+    expect((err as Error).message).toBe('This audit is marked complete');
+    expect(await sql`select 1 from public.scripts where session_id = ${w.sessionId} and name like 'Remediation%'`).toHaveLength(0);
+    expect((await sql`select status, result_version_id from public.proposals where id = ${proposal.id}`)[0]).toEqual({ status: 'pending', result_version_id: null });
+    expect(await sql`select * from public.remediation_cycles where session_id = ${w.sessionId}`).toEqual(rowBefore);
+    expect(await sql`select 1 from public.activity_log where entity_id = ${proposal.id} and action = 'proposal.accept'`).toHaveLength(0);
+    // The diff tab gets the same reason and disables Accept; the UI action reports it.
+    expect((await proposals.getProposalViewFor(w.userId, proposal.id))!.remediation!.acceptBlocked).toBe('This audit is marked complete');
+    const { acceptProposalAction } = await import('@/features/proposals/actions');
+    expect(await acceptProposalAction({ proposalId: proposal.id, acknowledgedFlagIds: proposal.flags.map((f: HighImpactFlag) => f.id) })).toEqual({
+      ok: false,
+      error: 'This audit is marked complete',
+    });
   });
 
   it('refuses a remediation from an earlier cycle’s report, before Claude and without touching any cycle row', async () => {
@@ -359,7 +390,7 @@ describe('acceptProposal (remediation)', () => {
 
     // The proposal view says what the accepted remediation produced.
     const view = await proposals.getProposalViewFor(w.userId, proposal.id);
-    expect(view!.remediation).toEqual({ cycleNo: 1, title: 'Remediation — Cycle 1', reportId: report.id, reportFilename: 'leads.txt' });
+    expect(view!.remediation).toEqual({ cycleNo: 1, title: 'Remediation — Cycle 1', reportId: report.id, reportFilename: 'leads.txt', acceptBlocked: null });
     expect(view!.result).toMatchObject({ scriptName: 'Remediation — Cycle 1', filename: 'remediation-cycle-1.ps1', versionNo: 1 });
 
     // A second accepted remediation in the same cycle gets its own name.

@@ -23,6 +23,7 @@ import {
   reproposeAdaptationFor,
   SessionReadOnlyError,
   StaleRemediationError,
+  AuditCompleteError,
   type ProposeResult,
 } from './service';
 import type { AcceptFailure, AcceptOutcome, ActionError, AdaptationOptions, ProposalView, ProposeOutcome, RejectOutcome } from './types';
@@ -41,6 +42,7 @@ function failure(e: unknown, fallback: string): ActionError {
     e instanceof ProposalStateError ||
     e instanceof NotImplementedError ||
     e instanceof StaleRemediationError ||
+    e instanceof AuditCompleteError ||
     e instanceof ContentTooLargeError ||
     e instanceof ForbiddenEditError ||
     e instanceof ForbiddenError ||

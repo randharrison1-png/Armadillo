@@ -10,6 +10,7 @@ import { LoadingState } from '@/components/shell/states/LoadingState';
 import { SetTabInspector, useInspectorStore } from '@/components/shell/inspectorStore';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Gated } from '@/components/ui/gated';
 import type { TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { draftKey, isDirty, useDrafts } from '@/features/workspace/drafts';
@@ -139,7 +140,9 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
   const latest = view.latestBaseVersion;
   const staleBase = editable && !remediation && !universal && !!latest && latest.id !== version.id;
   const shownConflict = conflict ?? (staleBase && latest ? { latestVersionId: latest.id, latestVersionNo: latest.version_no } : null);
-  const canAccept = editable && busy === null && !scanning && ackedCount === flags.length && !shownConflict;
+  // A remediation of another cycle, or of an audit marked complete, cannot be accepted (the server refuses it too).
+  const acceptBlocked = editable ? (remediation?.acceptBlocked ?? null) : null;
+  const canAccept = editable && busy === null && !scanning && ackedCount === flags.length && !shownConflict && !acceptBlocked;
 
   const accept = async () => {
     if (!canAccept) return;
@@ -294,6 +297,13 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
         </p>
       ) : null}
 
+      {acceptBlocked ? (
+        <p role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-4 py-2 text-small text-text">
+          <AlertTriangle aria-hidden className="size-4 shrink-0 text-warning" />
+          {acceptBlocked}. This proposal can no longer be accepted; reject it or keep it for reference.
+        </p>
+      ) : null}
+
       {shownConflict && editable ? (
         <div role="alert" className="flex shrink-0 flex-col gap-2 border-b border-border bg-surface px-4 py-2">
           <p className="flex items-center gap-2 text-small text-text">
@@ -372,14 +382,16 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
             <Button variant="secondary" onClick={() => setConfirmReject(true)} loading={busy === 'reject'} disabled={busy !== null}>
               Reject
             </Button>
-            <Button
-              onClick={() => void accept()}
-              loading={busy === 'accept'}
-              disabled={!canAccept}
-              title={ackedCount < flags.length ? 'Acknowledge every high-impact change in the inspector first' : undefined}
-            >
-              {acceptLabel(ackedCount, flags.length)}
-            </Button>
+            <Gated reason={acceptBlocked}>
+              <Button
+                onClick={() => void accept()}
+                loading={busy === 'accept'}
+                disabled={!canAccept}
+                title={ackedCount < flags.length ? 'Acknowledge every high-impact change in the inspector first' : undefined}
+              >
+                {acceptLabel(ackedCount, flags.length)}
+              </Button>
+            </Gated>
           </div>
         </div>
       ) : null}

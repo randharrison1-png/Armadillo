@@ -16,7 +16,14 @@ export type ProposalView = {
   /** The version an accepted proposal produced. */
   result: { versionId: string; versionNo: number; scriptId: string; scriptName: string; filename: string; content: string } | null;
   /** Remediation proposals: the audit cycle and report it answers; accepting creates the script `title`. Null for adaptations. */
-  remediation: { cycleNo: number; title: string; reportId: string | null; reportFilename: string | null } | null;
+  remediation: {
+    cycleNo: number;
+    title: string;
+    reportId: string | null;
+    reportFilename: string | null;
+    /** Why a pending remediation cannot be accepted now (another cycle, or its audit is marked complete); null when it can. */
+    acceptBlocked: string | null;
+  } | null;
 };
 
 export type ReadmeChoice = { id: string; label: string; hasText: boolean };

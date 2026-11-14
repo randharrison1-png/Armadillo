@@ -11,7 +11,7 @@ import { NO_TEXT_MESSAGE } from '@/features/readme/messages';
 import { NotFoundError, SessionReadOnlyError } from '@/features/readme/service';
 import { insertScriptWithV1 } from '@/features/library/service';
 import { ContentTooLargeError, forkToSessionTx, normalizeForLineEnding, saveScriptVersionTx } from '@/features/library/versioning';
-import { remediationScriptIdentity, remediationTitle, staleRemediationReason } from '@/features/reports/remediationRules';
+import { AUDIT_COMPLETE_REASON, remediationScriptIdentity, remediationTitle, staleRemediationReason, type CycleOutcome } from '@/features/reports/remediationRules';
 import { lineEndingOf } from '@/server/files/encoding';
 import { cp1252Encodable } from '@/lib/cp1252';
 import { defaultFormat } from '@/features/library/scriptMeta';
@@ -86,6 +86,21 @@ export class StaleRemediationError extends Error {
   constructor(readonly proposalCycle: number | null) {
     super(staleRemediationReason(proposalCycle));
   }
+}
+
+/** The remediation's audit cycle is marked complete ("Mark complete" is final). Nothing is written. */
+export class AuditCompleteError extends Error {
+  readonly name = 'AuditCompleteError';
+  constructor() {
+    super(AUDIT_COMPLETE_REASON);
+  }
+}
+
+/** The outcome recorded for a session's cycle (null: no row yet). */
+async function cycleOutcomeOf(tx: Tx, sessionId: string, cycleNo: number): Promise<CycleOutcome | null> {
+  const [row] = await tx<{ outcome: CycleOutcome }[]>`
+    select outcome from public.remediation_cycles where session_id = ${sessionId} and cycle_no = ${cycleNo}`;
+  return row?.outcome ?? null;
 }
 
 /** Something proposals cannot do (e.g. re-proposing a remediation: make a new one from its report). */
@@ -313,7 +328,8 @@ const tooLarge = (s: string) => new TextEncoder().encode(s).length > MAX_TEXT_BY
  * flag gate and re-scan as an adaptation. Refused (StaleRemediationError) when the proposal's
  * cycle_no is not the session's current cycle: the script is named after proposal.cycle_no and the
  * cycle's remediation_cycles row is pointed at this proposal, so only the current cycle's record is
- * ever touched. Runs inside acceptProposalFor's transaction, after its locks (session row first).
+ * ever touched. Refused (AuditCompleteError) when that cycle is marked complete. Both checks run
+ * inside acceptProposalFor's transaction, after its locks (session row first), before any write.
  */
 async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ack: string[], edited: string | undefined): Promise<AcceptResult> {
   const [base] = p.base_version_id ? await tx<ScriptVersion[]>`select * from public.script_versions where id = ${p.base_version_id}` : [];
@@ -321,6 +337,7 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
   if (!base || !baseScript || baseScript.session_id !== p.session_id) throw new NotFoundError('Script version');
   if (p.cycle_no === null || p.cycle_no !== currentCycle) throw new StaleRemediationError(p.cycle_no);
   const cycleNo = p.cycle_no;
+  if ((await cycleOutcomeOf(tx, p.session_id, cycleNo)) === 'completed') throw new AuditCompleteError();
 
   const final = normalizeForLineEnding(edited ?? p.proposed_content, base.line_ending);
   if (tooLarge(final)) throw new ContentTooLargeError();
@@ -354,7 +371,7 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
   await tx`update public.proposals set status = 'accepted', result_version_id = ${version!.id}, updated_at = now() where id = ${p.id}`;
   await tx`
     update public.remediation_cycles set proposal_id = ${p.id}
-    where session_id = ${p.session_id} and cycle_no = ${cycleNo} and proposal_id is distinct from ${p.id}`;
+    where session_id = ${p.session_id} and cycle_no = ${cycleNo} and proposal_id is distinct from ${p.id} and outcome <> 'completed'`;
   await logActivity(tx, {
     action: 'proposal.accept',
     entityType: 'proposal',
@@ -491,6 +508,15 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
     const sessionStatus = session?.status ?? 'completed';
     const cycleNo = proposal.kind === 'remediation' ? (proposal.cycle_no ?? session?.current_cycle ?? 1) : null;
     const reportFilename = cycleNo !== null ? await reportFilenameOf(tx, proposal.report_id) : null;
+    // Same rules acceptRemediationTx enforces, so the diff tab can disable Accept with the reason.
+    const acceptBlocked =
+      cycleNo === null || proposal.status !== 'pending'
+        ? null
+        : proposal.cycle_no === null || proposal.cycle_no !== session?.current_cycle
+          ? staleRemediationReason(proposal.cycle_no)
+          : (await cycleOutcomeOf(tx, proposal.session_id, cycleNo)) === 'completed'
+            ? AUDIT_COMPLETE_REASON
+            : null;
     return {
       proposal: { ...proposal, flags: Array.isArray(proposal.flags) ? proposal.flags : [] },
       base: version && script ? { script, version } : null,
@@ -501,7 +527,7 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
       result: result
         ? { versionId: result.version_id, versionNo: result.version_no, scriptId: result.script_id, scriptName: result.name, filename: result.filename, content: result.content }
         : null,
-      remediation: cycleNo !== null ? { cycleNo, title: remediationTitle(cycleNo), reportId: proposal.report_id, reportFilename } : null,
+      remediation: cycleNo !== null ? { cycleNo, title: remediationTitle(cycleNo), reportId: proposal.report_id, reportFilename, acceptBlocked } : null,
     };
   });
 }
