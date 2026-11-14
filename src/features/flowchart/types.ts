@@ -1,5 +1,6 @@
 // Client-safe data shapes for the flowchart tab.
 import type { StepKey, StepStatus } from '@/lib/types';
+import type { CycleOutcome, DecisionAvailability } from '@/features/reports/remediationRules';
 
 export type FlowStep = { step: StepKey; status: StepStatus; notes: string | null; updatedAt: string };
 export type FlowEvidence = { id: string; step: StepKey; kind: string; note: string | null; createdAt: string };
@@ -13,9 +14,25 @@ export type FlowchartData = {
   /** Newest first. */
   events: FlowEvent[];
   latestReport: { id: string; filename: string; cycleNo: number } | null;
-  /** The newest non-archived script generated for this session. */
+  /** The session's hardening script: the newest non-archived session script that is not an accepted remediation. */
   latestSessionScript: { scriptId: string; filename: string } | null;
+  /** The newest remediation proposal that was not rejected, with the script it produced once accepted. */
+  latestRemediation: LatestRemediation | null;
+  /** Enable rules of the decision node's "Mark complete" / "Start another cycle". */
+  decision: DecisionAvailability;
+  /** Recorded audit cycles, oldest first (spec 8.2: history of previous audit/remediation cycles). */
+  cycles: FlowCycle[];
 };
+
+export type LatestRemediation = {
+  proposalId: string;
+  /** "Remediation — Cycle n" (the accepted script's name once accepted). */
+  title: string;
+  status: 'pending' | 'accepted';
+  script: { scriptId: string; filename: string } | null;
+};
+
+export type FlowCycle = { cycleNo: number; outcome: CycleOutcome; reportFilename: string | null; updatedAt: string };
 
 export type ActionResult<T = undefined> = ({ ok: true } & (T extends undefined ? object : { value: T })) | { ok: false; error: string };
 

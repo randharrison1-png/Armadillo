@@ -4,7 +4,19 @@ import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/server/auth';
 import { FileTooLargeError, UnreadableDocumentError, UnsupportedFileTypeError } from '@/server/files/limits';
 import { createUploadTarget, ForbiddenFileError, readPrivate, uploadPrivate, verifyStoredUpload, type UploadTarget } from '@/server/files/storage';
+import { ClaudeUpstreamError, StructuredOutputError } from '@/server/claude/client';
+import { ForbiddenError } from '@/server/claude/context';
+import { ClaudeKeyMissingError, ClaudeKeyUnreadableError } from '@/server/claude/keys';
+import { KeyEncryptionConfigError } from '@/server/security/crypto';
 import type { LeadsReport } from '@/lib/types';
+import {
+  applyVerificationFor,
+  confirmAllSuggestionsFor,
+  mapFindingsToRequirementsFor,
+  proposeRemediationFor,
+  RemediationInputError,
+  setFindingRequirementFor,
+} from './remediation';
 import {
   getReportDetailFor,
   getReportRawLinesFor,
@@ -19,6 +31,10 @@ import {
 
 export type ReportActionError = { ok: false; error: string };
 export type ReportRecorded = { ok: true; reportId: string; filename: string; parser: string; findings: number };
+export type RemediationProposed = { ok: true; proposalId: string; title: string; flags: number; droppedFlags: number };
+export type MappingsSuggested = { ok: true; suggested: number; considered: number; dropped: number };
+export type SuggestionsConfirmed = { ok: true; confirmed: number };
+export type VerificationApplied = { ok: true; verified: number; alreadyVerified: number; messages: string[] };
 
 const revalidate = () => revalidatePath('/app', 'layout');
 
@@ -34,6 +50,81 @@ function message(e: unknown, fallback: string): string {
   if (e instanceof UnreadableDocumentError) return 'That file could not be read. It may be corrupt or password-protected. Upload the text output of the LEADS script instead.';
   if (e instanceof ForbiddenFileError) return 'That upload does not belong to this session.';
   return fallback;
+}
+
+/** Remediation / mapping / verification failures: user-facing text for the errors these can raise. */
+function remediationMessage(e: unknown, fallback: string): string {
+  rethrowControlFlow(e);
+  if (e instanceof NotFoundError) return 'That report, finding or requirement no longer exists in this session.';
+  if (
+    e instanceof SessionReadOnlyError ||
+    e instanceof RemediationInputError ||
+    e instanceof ForbiddenError ||
+    e instanceof StructuredOutputError ||
+    e instanceof ClaudeUpstreamError ||
+    e instanceof ClaudeKeyMissingError ||
+    e instanceof ClaudeKeyUnreadableError
+  ) {
+    return e.message;
+  }
+  if (e instanceof KeyEncryptionConfigError) return 'Claude key storage is not configured on this server. Ask the administrator to set KEY_ENCRYPTION_SECRET.';
+  console.error('[reports] remediation action failed:', e instanceof Error ? e.name : 'unknown error');
+  return fallback;
+}
+
+/** "Propose remediation": Claude writes a targeted script for the report's failing findings (pending proposal). */
+export async function proposeRemediationAction(input: { sessionId: string; reportId: string }): Promise<RemediationProposed | ReportActionError> {
+  try {
+    const user = await requireUser();
+    const r = await proposeRemediationFor(user.id, { sessionId: String(input.sessionId), reportId: String(input.reportId) });
+    revalidate();
+    return { ok: true, proposalId: r.proposal.id, title: r.title, flags: r.proposal.flags.length, droppedFlags: r.droppedFlags };
+  } catch (e) {
+    return { ok: false, error: remediationMessage(e, 'Could not get a remediation from Claude. Try again.') };
+  }
+}
+
+/** "Suggest mappings": Claude suggests a requirement per finding; the user confirms each. */
+export async function suggestMappingsAction(input: { reportId: string }): Promise<MappingsSuggested | ReportActionError> {
+  try {
+    const user = await requireUser();
+    const r = await mapFindingsToRequirementsFor(user.id, String(input.reportId));
+    return { ok: true, suggested: r.suggested, considered: r.mappings.length, dropped: r.dropped };
+  } catch (e) {
+    return { ok: false, error: remediationMessage(e, 'Could not get suggestions from Claude. Try again.') };
+  }
+}
+
+/** Confirm / Change (a requirement id) or Clear (null) one finding's mapping. */
+export async function setFindingRequirementAction(input: { findingId: string; requirementId: string | null }): Promise<{ ok: true } | ReportActionError> {
+  try {
+    const user = await requireUser();
+    await setFindingRequirementFor(user.id, { findingId: String(input.findingId), requirementId: input.requirementId === null ? null : String(input.requirementId) });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: remediationMessage(e, 'Could not save the mapping. Try again.') };
+  }
+}
+
+export async function confirmAllSuggestionsAction(input: { reportId: string }): Promise<SuggestionsConfirmed | ReportActionError> {
+  try {
+    const user = await requireUser();
+    return { ok: true, ...(await confirmAllSuggestionsFor(user.id, String(input.reportId))) };
+  } catch (e) {
+    return { ok: false, error: remediationMessage(e, 'Could not confirm the suggestions. Try again.') };
+  }
+}
+
+/** "Apply verification": confirmed passing findings verify their requirements (evidence = this report). */
+export async function applyVerificationAction(input: { reportId: string }): Promise<VerificationApplied | ReportActionError> {
+  try {
+    const user = await requireUser();
+    const r = await applyVerificationFor(user.id, String(input.reportId));
+    revalidate();
+    return { ok: true, verified: r.verified, alreadyVerified: r.alreadyVerified, messages: r.messages };
+  } catch (e) {
+    return { ok: false, error: remediationMessage(e, 'Could not apply the verification. Try again.') };
+  }
 }
 
 /** `<owner>/<session>/<uuid>-<sanitized name>`: the stored name keeps the real extension. */

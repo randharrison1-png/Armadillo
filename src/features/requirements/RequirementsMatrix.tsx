@@ -238,6 +238,19 @@ function StateCell({ row: r }: { row: RequirementRow }) {
       </p>
       {state === 'verified' ? <p className="text-muted">Evidence: {r.evidenceLabel ?? `report ${r.evidenceReportId?.slice(0, 8)}`}</p> : null}
       {state === 'reported' && r.workState === 'reported' ? <p className="text-muted">Not yet verified</p> : null}
+      {r.failingInLatest ? (
+        <p
+          data-testid="failing-marker"
+          className="mt-1 flex flex-col text-danger"
+          title="A confirmed finding for this requirement failed in the latest report that checked it. A verified requirement stays verified."
+        >
+          <span className="inline-flex items-center gap-1">
+            <AlertTriangle aria-hidden className="size-4 shrink-0" />
+            Failing in latest report
+          </span>
+          <span className="text-muted">{r.failingInLatest.label}</span>
+        </p>
+      ) : null}
     </div>
   );
 }

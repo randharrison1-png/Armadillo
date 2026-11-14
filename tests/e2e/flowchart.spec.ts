@@ -99,7 +99,7 @@ test('reload restores statuses and notes; verified needs evidence; history lists
   await expect(page.getByRole('list', { name: 'Hardening steps' }).getByText('Open README: In Progress')).toBeAttached();
 });
 
-test('decision node offers disabled actions with a tooltip and changes nothing', async ({ page }) => {
+test('decision node: actions are disabled with the reason until their conditions hold, and nothing changes', async ({ page }) => {
   await signIn(page, `e2e-${randomUUID()}@example.test`);
   await newSession(page, 'Flow decision');
   await openFlowchart(page);
@@ -109,7 +109,10 @@ test('decision node offers disabled actions with a tooltip and changes nothing',
   await expect(panel.getByRole('button', { name: 'Mark complete' })).toBeDisabled();
   await expect(panel.getByRole('button', { name: 'Start another cycle' })).toBeDisabled();
   await panel.getByRole('button', { name: 'Mark complete' }).locator('xpath=..').hover();
-  await expect(page.getByRole('tooltip').first()).toContainText('Available after a LEADS report is checked');
+  await expect(page.getByRole('tooltip').first()).toContainText('Mark “Check final points” Complete and Verified first');
+  await panel.getByRole('button', { name: 'Start another cycle' }).locator('xpath=..').hover();
+  await expect(page.getByRole('tooltip').first()).toContainText('Upload a LEADS report for cycle 1 first');
+  await expect(panel.getByText('No cycle has been closed or remediated yet.')).toBeVisible();
   await expect(node(page, 'Submit final')).toHaveAccessibleName('Submit final, Not Started');
 });
 

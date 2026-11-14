@@ -2,6 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/server/auth';
+import { CycleDecisionError, decideCycleFor } from '@/features/reports/cycles';
+import type { CycleDecision } from '@/features/reports/remediationRules';
 import type { StepKey, StepStatus } from '@/lib/types';
 import { changeStepStatusFor, FlowchartError, getFlowchartDataFor, updateStepNotesFor } from './service';
 import type { FlowchartData } from './types';
@@ -11,7 +13,7 @@ type Result = { ok: true } | { ok: false; error: string };
 function failure(e: unknown, fallback: string): Result {
   // Redirect/auth control-flow errors from requireUser carry a digest and must propagate.
   if (typeof e === 'object' && e !== null && 'digest' in e) throw e;
-  if (e instanceof FlowchartError) return { ok: false, error: e.message };
+  if (e instanceof FlowchartError || e instanceof CycleDecisionError) return { ok: false, error: e.message };
   // A DB-level refusal (completed-session trigger) reads as a read-only session.
   console.error('[flowchart] action failed:', e instanceof Error ? e.name : 'unknown error');
   return { ok: false, error: fallback };
@@ -48,5 +50,17 @@ export async function saveStepNotesAction(input: { sessionId: string; step: Step
     return { ok: true };
   } catch (e) {
     return failure(e, 'Could not save the notes. Try again.');
+  }
+}
+
+/** The decision node: "Mark complete" ('complete') or "Start another cycle" ('continue'), with the same enable rules the buttons show. */
+export async function decideCycleAction(input: { sessionId: string; decision: CycleDecision }): Promise<Result> {
+  try {
+    const user = await requireUser();
+    await decideCycleFor(user.id, { sessionId: String(input.sessionId), decision: input.decision });
+    revalidatePath(`/app/sessions/${input.sessionId}`);
+    return { ok: true };
+  } catch (e) {
+    return failure(e, 'Could not record the decision. Try again.');
   }
 }

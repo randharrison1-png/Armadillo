@@ -1,17 +1,19 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Gated } from '@/components/ui/gated';
+import type { Availability, CycleDecision, DecisionAvailability } from '@/features/reports/remediationRules';
 import { STEP_STATUS_LABEL, type StepKey, type StepStatus } from '@/lib/types';
-import { saveStepNotesAction, setStepStatusAction } from './actions';
+import { decideCycleAction, saveStepNotesAction, setStepStatusAction } from './actions';
 import { STATUS_ICON, STATUS_TEXT_CLASS } from './statusUi';
 import { STEP_LABEL } from './stepMeta';
 import type { ToolRoute } from './toolRoutes';
-import { EVIDENCE_STEPS, NOTE_MAX, type FlowEvent, type FlowEvidence, type FlowStep } from './types';
+import { EVIDENCE_STEPS, NOTE_MAX, type FlowCycle, type FlowEvent, type FlowEvidence, type FlowStep } from './types';
 
 const STATUSES = Object.keys(STEP_STATUS_LABEL) as StepStatus[];
 const KIND_LABEL: Record<string, string> = { execution_output: 'Execution output', screenshot: 'Screenshot', verification: 'Verification', other: 'Other' };
@@ -23,27 +25,58 @@ const SECTION_NOTE: Record<NonNullable<ToolRoute['inspectorSection']>, string> =
 
 const stamp = (iso: string) => `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(iso))} UTC`;
 
-/** Wraps a disabled control so keyboard and pointer users can read why it is unavailable. */
-function Gated({ reason, children }: { reason?: string; children: ReactNode }) {
-  if (!reason) return <>{children}</>;
-  return (
-    <TooltipProvider delayDuration={100}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span tabIndex={0} className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-            {children}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{reason}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
+const OUTCOME_LABEL: Record<FlowCycle['outcome'], string> = { open: 'Open', completed: 'Marked complete', continued: 'Continued to the next cycle' };
 
-export const DECISION_UNAVAILABLE = 'Available after a LEADS report is checked';
+type DecisionProps = {
+  sessionId: string;
+  currentCycle: number;
+  decision: DecisionAvailability;
+  cycles: FlowCycle[];
+  /** Called after a successful decision so the tab reloads its data. */
+  onChanged: () => void;
+};
 
-/** Inspector body for the decision node: conceptual only (spec 8.3); never changes a status. */
-export function DecisionPanel() {
+const CONFIRM: Record<CycleDecision, { title: string; body: (cycle: number) => string; action: string }> = {
+  complete: {
+    title: 'Mark this audit cycle complete?',
+    body: (n) => `Cycle ${n} is recorded as complete and “Submit final” moves to In Progress. Nothing is submitted for you; the session stays open until you finish it.`,
+    action: 'Mark complete',
+  },
+  continue: {
+    title: 'Start another audit cycle?',
+    body: (n) =>
+      `Cycle ${n} is closed and cycle ${n + 1} starts: Run LEADS, Inspect LEADS report, Targeted remediation and Check final points go back to Not Started. Reports, scripts, proposals and the step history of cycle ${n} are kept.`,
+    action: 'Start another cycle',
+  },
+};
+
+/**
+ * Inspector body for the decision node (spec 8.3): the scoring conditions are not confirmed, so the
+ * user decides. "Mark complete" needs Check final points Complete and Verified; "Start another
+ * cycle" needs a LEADS report in this cycle. Disabled buttons explain why in a tooltip.
+ */
+export function DecisionPanel({ sessionId, currentCycle, decision, cycles, onChanged }: DecisionProps) {
+  const [confirming, setConfirming] = useState<CycleDecision | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (choice: CycleDecision) => {
+    setPending(true);
+    setError(null);
+    try {
+      const r = await decideCycleAction({ sessionId, decision: choice });
+      if (!r.ok) return setError(r.error);
+      setConfirming(null);
+      onChanged();
+    } catch {
+      setError('Could not record the decision. Try again.');
+    } finally {
+      setPending(false);
+    }
+  };
+  const reason = (a: Availability) => (a.enabled ? undefined : a.reason);
+  const shown = confirming ? CONFIRM[confirming] : null;
+
   return (
     <div className="flex flex-col gap-4">
       <p>
@@ -51,18 +84,60 @@ export function DecisionPanel() {
         <span className="text-text">Continue remediation</span> and return to the LEADS audit.
       </p>
       <p>The exact scoring conditions for each branch are not confirmed yet, so Armadillo does not decide this for you and never changes a step on its own.</p>
+      <p className="text-text">Current cycle: {currentCycle}</p>
       <div className="flex flex-wrap gap-2">
-        <Gated reason={DECISION_UNAVAILABLE}>
-          <Button variant="secondary" disabled>
+        <Gated reason={reason(decision.complete)}>
+          <Button variant="secondary" disabled={!decision.complete.enabled || pending} onClick={() => (setError(null), setConfirming('complete'))}>
             Mark complete
           </Button>
         </Gated>
-        <Gated reason={DECISION_UNAVAILABLE}>
-          <Button variant="secondary" disabled>
+        <Gated reason={reason(decision.continue)}>
+          <Button variant="secondary" disabled={!decision.continue.enabled || pending} onClick={() => (setError(null), setConfirming('continue'))}>
             Start another cycle
           </Button>
         </Gated>
       </div>
+      {error && !confirming ? (
+        <p role="alert" className="text-danger">
+          {error}
+        </p>
+      ) : null}
+      <section aria-label="Audit cycles" className="flex flex-col gap-2">
+        <h4 className="text-small font-semibold text-text">Cycle history</h4>
+        {cycles.length === 0 ? (
+          <p>No cycle has been closed or remediated yet.</p>
+        ) : (
+          <ol className="flex flex-col gap-1">
+            {cycles.map((c) => (
+              <li key={c.cycleNo}>
+                <span className="text-text">Cycle {c.cycleNo}</span> · {OUTCOME_LABEL[c.outcome]}
+                {c.reportFilename ? ` · report ${c.reportFilename}` : ''}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+      <Dialog open={!!confirming} onOpenChange={(open) => !open && !pending && setConfirming(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{shown?.title}</DialogTitle>
+            <DialogDescription>{shown?.body(currentCycle)}</DialogDescription>
+          </DialogHeader>
+          {error ? (
+            <p role="alert" className="text-small text-danger">
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setConfirming(null)} disabled={pending}>
+              Cancel
+            </Button>
+            <Button onClick={() => confirming && void decide(confirming)} loading={pending}>
+              {shown?.action}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

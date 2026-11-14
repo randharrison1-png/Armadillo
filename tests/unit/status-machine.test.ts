@@ -103,6 +103,7 @@ const row = (over: Partial<RequirementRow> = {}): RequirementRow => ({
   evidenceReportId: null,
   evidenceLabel: null,
   reviewedAt: null,
+  failingInLatest: null,
   ...over,
 });
 

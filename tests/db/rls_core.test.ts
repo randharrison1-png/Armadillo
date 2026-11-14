@@ -152,6 +152,7 @@ describe('core schema: cross-ownership (a child row may only reference its own o
     ['requirements', (a) => ({ evidence_report_id: a.reportId })],
     ['leads_findings', (a) => ({ report_id: a.reportId })],
     ['leads_findings', (a) => ({ requirement_id: a.requirementId })],
+    ['leads_findings', (a) => ({ suggested_requirement_id: a.requirementId })],
     ['proposals', (a) => ({ session_id: a.sessionId })],
     ['proposals', (a) => ({ conversation_id: a.conversationId })],
     ['proposals', (a) => ({ base_version_id: a.sessionV1 })],
@@ -179,6 +180,7 @@ describe('core schema: cross-ownership (a child row may only reference its own o
     const cases: Array<[CoreTable, string, Row]> = [
       ['scripts', b.sessionScriptId, { current_version_id: a.sessionV2 }],
       ['leads_findings', b.findingId, { requirement_id: a.requirementId }],
+      ['leads_findings', b.findingId, { suggested_requirement_id: a.requirementId }],
       ['requirements', b.requirementId, { evidence_report_id: a.reportId }],
       ['messages', b.messageId, { conversation_id: a.conversationId }],
     ];

@@ -4,7 +4,7 @@ import type { HighImpactFlag, Proposal, Script, ScriptVersion } from '@/lib/type
 /** Everything the proposal diff tab shows. */
 export type ProposalView = {
   proposal: Proposal;
-  /** The version the proposal edits, with its script; null when it has none (remediation, Task 17). */
+  /** The version the proposal edits (a remediation: the hardening script it was written against), with its script. */
   base: { script: Script; version: ScriptVersion } | null;
   /** The base script's current version now (differs from `base.version` once someone saved since). */
   latestBaseVersion: { id: string; version_no: number } | null;
@@ -15,6 +15,8 @@ export type ProposalView = {
   readOnly: boolean;
   /** The version an accepted proposal produced. */
   result: { versionId: string; versionNo: number; scriptId: string; scriptName: string; filename: string; content: string } | null;
+  /** Remediation proposals: the audit cycle and report it answers; accepting creates the script `title`. Null for adaptations. */
+  remediation: { cycleNo: number; title: string; reportId: string | null; reportFilename: string | null } | null;
 };
 
 export type ReadmeChoice = { id: string; label: string; hasText: boolean };

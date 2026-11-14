@@ -10,6 +10,7 @@ const ctx = (over: Partial<ToolContext> = {}): ToolContext => ({
   sessionId: 's1',
   latestReport: { id: 'r-latest', filename: 'leads.txt' },
   latestSessionScript: { scriptId: 'sc1', filename: 'harden.ps1' },
+  latestRemediation: null,
   ...over,
 });
 
@@ -50,7 +51,7 @@ describe('toolRouteFor', () => {
     expect(toolRouteFor('claude_adaptation', ctx())).toMatchObject({ kind: 'requirements' });
     expect(toolRouteFor('run_hardening', ctx())).toMatchObject({ kind: 'script', resourceId: 'sc1' });
     expect(toolRouteFor('run_leads', ctx())).toMatchObject({ kind: 'report' });
-    expect(toolRouteFor('run_remediation', ctx())).toMatchObject({ kind: 'requirements' });
+    expect(toolRouteFor('run_remediation', ctx())).toMatchObject({ kind: 'report', resourceId: 'r-latest' });
   });
 
   it('falls back to the library when the session has no script', () => {

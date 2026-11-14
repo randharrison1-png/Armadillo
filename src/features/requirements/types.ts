@@ -28,6 +28,11 @@ export type RequirementRow = {
   evidenceLabel: string | null;
   /** ISO time the user explicitly reviewed this disruptive requirement; null = not reviewed. */
   reviewedAt: string | null;
+  /**
+   * The latest report with a confirmed finding for this requirement, when one of those confirmed
+   * findings failed ("Failing in latest report"). Never changes the state: verified stays verified.
+   */
+  failingInLatest: { reportId: string; label: string } | null;
 };
 
 export type ReadmeOption = { id: string; label: string; hasText: boolean };

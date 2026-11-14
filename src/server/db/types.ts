@@ -173,6 +173,8 @@ export type LeadsFinding = Mutable & {
   category: string | null;
   raw_line: number;
   requirement_id: string | null;
+  /** Claude's suggestion (0004d); the user confirms it into requirement_id. */
+  suggested_requirement_id: string | null;
 };
 
 export type Evidence = Mutable & {

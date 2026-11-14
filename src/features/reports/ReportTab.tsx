@@ -1,20 +1,33 @@
 'use client';
 
 import { memo, useCallback, useEffect, useState } from 'react';
-import { Bot, Check, CircleHelp, ScrollText, X } from 'lucide-react';
+import { Bot, Check, CircleHelp, ListChecks, ScrollText, Sparkles, Wrench, X } from 'lucide-react';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
 import { LoadingState } from '@/components/shell/states/LoadingState';
 import { Button } from '@/components/ui/button';
+import { Gated } from '@/components/ui/gated';
+import { fieldClass } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { openToolRoute, toolRouteFor } from '@/features/flowchart/toolRoutes';
+import { proposalTab } from '@/features/proposals/review';
 import { getWorkspaceStore } from '@/features/workspace/store';
 import type { TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { loadReportRaw, loadReportsView, loadReportView } from './actions';
+import {
+  applyVerificationAction,
+  confirmAllSuggestionsAction,
+  loadReportRaw,
+  loadReportsView,
+  loadReportView,
+  proposeRemediationAction,
+  setFindingRequirementAction,
+  suggestMappingsAction,
+} from './actions';
 import { MAX_FINDINGS } from './parsers/shared';
 import { reportTab, useReportUi } from './reportUi';
-import type { ReportDetail, ReportFinding, ReportsOverview, ReportSummary } from './service';
+import { READ_ONLY_REASON, remediableFindings } from './remediationRules';
+import type { ReportDetail, ReportFinding, ReportRequirement, ReportsOverview, ReportSummary } from './service';
 import { UploadReport } from './UploadReport';
 
 /** Findings rows / raw lines shown at first; "Show more" adds another chunk (large reports never freeze the tab). */
@@ -147,13 +160,15 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
   if (load.state === 'error') return <ErrorState title="Could not load the report" detail="Check your connection and try again." onRetry={retry} />;
   if (load.state === 'missing') return <EmptyState icon={ScrollText} title="Report not found" description="This report no longer exists." />;
 
-  const { report, findings } = load.data;
+  const { report, findings, requirements, remediation, sessionStatus } = load.data;
+  const readOnly = sessionStatus === 'completed';
   const showRaw = raw ?? findings.length === 0; // nothing parsed: the raw text is the report
   const counts = { fail: 0, pass: 0, unknown: 0 };
   for (const f of findings) counts[f.status]++;
 
   const sendToClaude = () =>
-    openToolRoute(sessionId, toolRouteFor('inspect_leads', { sessionId, latestReport: { id: report.id, filename: report.filename }, latestSessionScript: null }));
+    openToolRoute(sessionId, toolRouteFor('inspect_leads', { sessionId, latestReport: { id: report.id, filename: report.filename }, latestSessionScript: null, latestRemediation: null }));
+  const reload = () => useReportUi.getState().bumpVersion(sessionId);
 
   return (
     <article className="mx-auto flex max-w-4xl flex-col gap-4 p-4" aria-label={`Report ${report.filename}`}>
@@ -164,10 +179,24 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
             <Button variant="secondary" aria-pressed={showRaw} onClick={() => setRaw(!showRaw)}>
               Raw
             </Button>
-            <Button onClick={sendToClaude}>
+            <Button variant="secondary" onClick={sendToClaude}>
               <Bot aria-hidden className="size-4" />
               Send to Claude
             </Button>
+            <ProposeRemediation
+              sessionId={sessionId}
+              reportId={report.id}
+              disabledReason={
+                readOnly
+                  ? READ_ONLY_REASON
+                  : !remediation.hardeningScript
+                    ? 'Accept an adaptation (or fork a library script into this session) first'
+                    : findings.length > 0 && remediableFindings(findings).length === 0
+                      ? 'Every finding passed: nothing to remediate'
+                      : null
+              }
+              onProposed={reload}
+            />
           </div>
         </div>
         <p className="flex flex-wrap gap-x-2 text-small text-muted">
@@ -193,18 +222,45 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
             {report.parseNote}
           </p>
         ) : null}
+        {remediation.hardeningScript && !readOnly ? (
+          <p className="text-small text-muted">
+            A remediation covers only the failing findings and is written against {remediation.hardeningScript}; it does not re-run the hardening script.
+          </p>
+        ) : null}
+        {remediation.proposal ? (
+          <p className="flex flex-wrap items-center gap-2 text-small text-text">
+            <Wrench aria-hidden className="size-4 shrink-0 text-muted" />
+            {remediation.proposal.title}: {PROPOSAL_STATUS[remediation.proposal.status]}
+            <Button
+              variant="ghost"
+              className="h-control-sm px-2"
+              onClick={() => getWorkspaceStore(sessionId).getState().openTab(proposalTab(remediation.proposal!.id, remediation.proposal!.title))}
+            >
+              Open remediation proposal
+            </Button>
+          </p>
+        ) : null}
         {report.truncated ? (
           <p role="status" className="text-small text-warning">
             Only the first {MAX_FINDINGS.toLocaleString('en-US')} findings are listed; the rest are in the raw text.
           </p>
         ) : null}
       </header>
-      {showRaw ? <RawText sessionId={sessionId} reportId={reportId} total={report.lineCount} /> : <FindingsTable findings={findings} counts={counts} />}
+      {showRaw ? (
+        <RawText sessionId={sessionId} reportId={reportId} total={report.lineCount} />
+      ) : (
+        <>
+          <VerificationBar reportId={report.id} findings={findings} requirements={requirements} readOnly={readOnly} onChanged={reload} />
+          <FindingsTable findings={findings} counts={counts} requirements={requirements} readOnly={readOnly} onChanged={reload} />
+        </>
+      )}
     </article>
   );
 }
 
-function FindingsTable({ findings, counts }: { findings: ReportFinding[]; counts: Record<ReportFinding['status'], number> }) {
+type MappingProps = { requirements: ReportRequirement[]; readOnly: boolean; onChanged: () => void };
+
+function FindingsTable({ findings, counts, requirements, readOnly, onChanged }: { findings: ReportFinding[]; counts: Record<ReportFinding['status'], number> } & MappingProps) {
   const [status, setStatus] = useState<StatusFilter>(ALL);
   const [severity, setSeverity] = useState<string>(ALL);
   const [shown, setShown] = useState(ROWS_CHUNK);
@@ -262,11 +318,12 @@ function FindingsTable({ findings, counts }: { findings: ReportFinding[]; counts
                 <th scope="col" className="px-2 py-2 font-medium">Category</th>
                 <th scope="col" className="w-full px-2 py-2 font-medium">Finding</th>
                 <th scope="col" className="px-2 py-2 font-medium">Line</th>
+                <th scope="col" className="min-w-64 px-2 py-2 font-medium">Requirement</th>
               </tr>
             </thead>
             <tbody>
               {visible.slice(0, shown).map((f) => (
-                <FindingRow key={f.id} finding={f} />
+                <FindingRow key={f.id} finding={f} requirements={requirements} readOnly={readOnly} onChanged={onChanged} />
               ))}
             </tbody>
           </table>
@@ -286,7 +343,7 @@ function FindingsTable({ findings, counts }: { findings: ReportFinding[]; counts
   );
 }
 
-const FindingRow = memo(function FindingRow({ finding: f }: { finding: ReportFinding }) {
+const FindingRow = memo(function FindingRow({ finding: f, requirements, readOnly, onChanged }: { finding: ReportFinding } & MappingProps) {
   const Icon = STATUS_ICON[f.status];
   return (
     <tr className="border-t border-border align-top hover:bg-surface-raised">
@@ -300,9 +357,230 @@ const FindingRow = memo(function FindingRow({ finding: f }: { finding: ReportFin
       <td className="px-2 py-2 text-muted">{f.category ?? ''}</td>
       <td className="break-words px-2 py-2 text-text">{f.title}</td>
       <td className="whitespace-nowrap px-2 py-2 text-muted">{f.rawLine ?? '—'}</td>
+      <td className="px-2 py-2">
+        <MappingCell finding={f} requirements={requirements} readOnly={readOnly} onChanged={onChanged} />
+      </td>
     </tr>
   );
 });
+
+const PROPOSAL_STATUS = { pending: 'pending review', accepted: 'accepted', rejected: 'rejected' } as const;
+
+/** "Propose remediation": Claude writes a targeted script for this report's failing findings; it opens in a diff tab for review. */
+function ProposeRemediation({ sessionId, reportId, disabledReason, onProposed }: { sessionId: string; reportId: string; disabledReason: string | null; onProposed: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const propose = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await proposeRemediationAction({ sessionId, reportId });
+      if (!r.ok) return setError(r.error);
+      getWorkspaceStore(sessionId).getState().openTab(proposalTab(r.proposalId, r.title));
+      onProposed();
+    } catch {
+      setError('Could not reach the server. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Gated reason={disabledReason}>
+        <Button onClick={() => void propose()} loading={busy} disabled={!!disabledReason || busy}>
+          <Wrench aria-hidden className="size-4" />
+          Propose remediation
+        </Button>
+      </Gated>
+      {error ? (
+        <p role="alert" className="w-full text-small text-danger">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+type Busy = 'suggest' | 'confirm' | 'verify' | null;
+
+/**
+ * Passing findings become verification evidence, but only through mappings the user confirmed:
+ * "Suggest mappings" (Claude), "Confirm all suggestions", then "Apply verification".
+ */
+function VerificationBar({ reportId, findings, requirements, readOnly, onChanged }: { reportId: string; findings: ReportFinding[] } & MappingProps) {
+  const [busy, setBusy] = useState<Busy>(null);
+  const [notice, setNotice] = useState<{ kind: 'status' | 'error'; lines: string[] } | null>(null);
+  if (findings.length === 0) return null;
+  const pending = findings.filter((f) => f.suggestedRequirementId && !f.requirementId).length;
+  const confirmedPasses = findings.filter((f) => f.status === 'pass' && f.requirementId).length;
+  const ro = readOnly ? READ_ONLY_REASON : null;
+
+  const run = async (kind: Exclude<Busy, null>) => {
+    setBusy(kind);
+    setNotice(null);
+    try {
+      if (kind === 'suggest') {
+        const r = await suggestMappingsAction({ reportId });
+        if (!r.ok) return setNotice({ kind: 'error', lines: [r.error] });
+        setNotice({ kind: 'status', lines: [`Claude suggested a requirement for ${r.suggested} of ${r.considered} findings. Confirm, change or clear each suggestion.`] });
+      } else if (kind === 'confirm') {
+        const r = await confirmAllSuggestionsAction({ reportId });
+        if (!r.ok) return setNotice({ kind: 'error', lines: [r.error] });
+        setNotice({ kind: 'status', lines: [`Confirmed ${r.confirmed} ${r.confirmed === 1 ? 'suggestion' : 'suggestions'}.`] });
+      } else {
+        const r = await applyVerificationAction({ reportId });
+        if (!r.ok) return setNotice({ kind: 'error', lines: [r.error] });
+        const head = `${r.verified} ${r.verified === 1 ? 'requirement' : 'requirements'} verified by this report${r.alreadyVerified ? ` (${r.alreadyVerified} already verified)` : ''}.`;
+        setNotice({ kind: 'status', lines: [head, ...r.messages] });
+      }
+      onChanged();
+    } catch {
+      setNotice({ kind: 'error', lines: ['Could not reach the server. Try again.'] });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section aria-label="Verification evidence" className="flex flex-col gap-2 rounded-sm border border-border bg-surface p-2">
+      <p className="text-small text-muted">
+        A passing finding is verification evidence for the requirement it checks, once you confirm the mapping. Failing findings never undo a verified requirement.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Gated reason={ro ?? (requirements.length === 0 ? 'Extract requirements from the README first' : null)}>
+          <Button variant="secondary" onClick={() => void run('suggest')} loading={busy === 'suggest'} disabled={!!ro || requirements.length === 0 || busy !== null}>
+            <Sparkles aria-hidden className="size-4" />
+            Suggest mappings
+          </Button>
+        </Gated>
+        <Gated reason={ro ?? (pending === 0 ? 'No suggestions waiting for confirmation' : null)}>
+          <Button variant="secondary" onClick={() => void run('confirm')} loading={busy === 'confirm'} disabled={!!ro || pending === 0 || busy !== null}>
+            <ListChecks aria-hidden className="size-4" />
+            Confirm all suggestions{pending ? ` (${pending})` : ''}
+          </Button>
+        </Gated>
+        <Gated reason={ro ?? (confirmedPasses === 0 ? 'Confirm a mapping for a passing finding first' : null)}>
+          <Button onClick={() => void run('verify')} loading={busy === 'verify'} disabled={!!ro || confirmedPasses === 0 || busy !== null}>
+            <Check aria-hidden className="size-4" />
+            Apply verification
+          </Button>
+        </Gated>
+      </div>
+      {notice ? (
+        <div role={notice.kind === 'error' ? 'alert' : 'status'} className={cn('flex flex-col gap-1 text-small', notice.kind === 'error' ? 'text-danger' : 'text-text')}>
+          {notice.lines.map((l) => (
+            <p key={l}>{l}</p>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** One finding's mapping: confirmed (Change / Clear), suggested (Confirm / Change / Clear), or none (Map). */
+function MappingCell({ finding: f, requirements, readOnly, onChanged }: { finding: ReportFinding } & MappingProps) {
+  const [editing, setEditing] = useState(false);
+  const [choice, setChoice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const textOf = (id: string | null) => (id ? requirements.find((r) => r.id === id)?.text ?? 'Unknown requirement' : null);
+  const confirmed = textOf(f.requirementId);
+  const suggested = f.requirementId ? null : textOf(f.suggestedRequirementId);
+
+  const save = async (requirementId: string | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await setFindingRequirementAction({ findingId: f.id, requirementId });
+      if (!r.ok) return setError(r.error);
+      setEditing(false);
+      onChanged();
+    } catch {
+      setError('Could not save the mapping. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <form
+        className="flex flex-col gap-1"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (choice) void save(choice);
+        }}
+      >
+        <select aria-label={`Requirement for ${f.title}`} className={cn(fieldClass, 'h-control-sm')} value={choice} onChange={(e) => setChoice(e.target.value)}>
+          <option value="">Choose a requirement…</option>
+          {requirements.map((r) => (
+            <option key={r.id} value={r.id}>
+              {clip(r.text)}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-1">
+          <Button type="submit" className="h-control-sm px-2" loading={busy} disabled={!choice}>
+            Save
+          </Button>
+          <Button type="button" variant="ghost" className="h-control-sm px-2" onClick={() => (setEditing(false), setError(null))}>
+            Cancel
+          </Button>
+        </div>
+        {error ? (
+          <p role="alert" className="text-danger">
+            {error}
+          </p>
+        ) : null}
+      </form>
+    );
+  }
+
+  const change = () => {
+    setChoice(f.requirementId ?? f.suggestedRequirementId ?? '');
+    setEditing(true);
+  };
+  return (
+    <div className="flex flex-col gap-1" data-testid="finding-mapping">
+      {confirmed ? (
+        <p className="break-words text-text">
+          <span className="sr-only">Confirmed: </span>
+          {confirmed}
+        </p>
+      ) : suggested ? (
+        <p className="break-words text-muted">
+          Suggested: <span className="text-text">{suggested}</span>
+        </p>
+      ) : (
+        <p className="text-muted">Not mapped</p>
+      )}
+      {readOnly || requirements.length === 0 ? null : (
+        <div className="flex flex-wrap gap-1">
+          {suggested ? (
+            <Button variant="secondary" className="h-control-sm px-2" loading={busy} aria-label={`Confirm mapping for ${f.title}`} onClick={() => void save(f.suggestedRequirementId)}>
+              Confirm
+            </Button>
+          ) : null}
+          <Button variant="ghost" className="h-control-sm px-2" aria-label={`${confirmed || suggested ? 'Change' : 'Map'} requirement for ${f.title}`} onClick={change} disabled={busy}>
+            {confirmed || suggested ? 'Change' : 'Map'}
+          </Button>
+          {confirmed || suggested ? (
+            <Button variant="ghost" className="h-control-sm px-2" aria-label={`Clear mapping for ${f.title}`} onClick={() => void save(null)} disabled={busy}>
+              Clear
+            </Button>
+          ) : null}
+        </div>
+      )}
+      {error ? (
+        <p role="alert" className="text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 /** The report's raw text as plain text (never HTML), loaded and rendered a chunk at a time. */
 function RawText({ sessionId, reportId, total }: { sessionId: string; reportId: string; total: number }) {

@@ -3,14 +3,17 @@ import type { ConversationMode } from '@/features/claude/types';
 import { requestClaudeIntent } from '@/features/claude/claudeIntent';
 import { scriptTab } from '@/features/library/scriptTabs';
 import { readmeTab } from '@/features/readme/readmeUi';
-import { REPORTS_TAB } from '@/features/reports/reportUi';
+import { proposalTab } from '@/features/proposals/review';
+import { REPORTS_TAB, reportTab } from '@/features/reports/reportUi';
 import { REQUIREMENTS_TAB } from '@/features/requirements/matrix';
 import { getWorkspaceStore } from '@/features/workspace/store';
+import type { LatestRemediation } from './types';
 
 export type ToolContext = {
   sessionId: string;
   latestReport: { id: string; filename: string } | null;
   latestSessionScript: { scriptId: string; filename: string } | null;
+  latestRemediation: LatestRemediation | null;
 };
 
 /** Inspector sections that stand in for tools Task 18 builds (forensic questions, final points, submit). */
@@ -53,9 +56,16 @@ export function toolRouteFor(step: StepKey, ctx: ToolContext): ToolRoute {
       return ctx.latestReport
         ? { ...CLAUDE_TAB, label: 'Send LEADS report to Claude', mode: 'remediation', refs: [{ type: 'leads_report', id: ctx.latestReport.id }] }
         : { ...CLAUDE_TAB, label: 'Send LEADS report to Claude', mode: 'remediation', disabledReason: 'Upload a LEADS report first' };
-    case 'run_remediation':
-      // Until the remediation proposals tool exists, remediation work is tracked in the matrix.
-      return { ...REQUIREMENTS_TAB, label: 'Open requirements matrix' };
+    case 'run_remediation': {
+      // The latest remediation: its script once accepted, else its proposal to review; with none yet,
+      // the latest report, where "Propose remediation" starts one.
+      const r = ctx.latestRemediation;
+      if (r?.status === 'accepted' && r.script) return { ...scriptTab(r.script.scriptId, r.script.filename), label: 'Open remediation script' };
+      if (r) return { ...proposalTab(r.proposalId, r.title), label: 'Review remediation proposal' };
+      return ctx.latestReport
+        ? { ...reportTab(ctx.latestReport.id, ctx.latestReport.filename), label: 'Propose remediation from the latest report' }
+        : { ...REPORTS_TAB, label: 'Propose remediation from the latest report', disabledReason: 'Upload a LEADS report first' };
+    }
     case 'check_points':
       return { ...FLOWCHART_TAB, label: 'Open final point check', inspectorSection: 'points' };
     case 'submit_final':

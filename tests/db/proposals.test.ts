@@ -357,13 +357,20 @@ describe('acceptProposal', () => {
     await expect(withUser(w.userId, (tx) => tx`update public.proposals set status = 'pending' where id = ${b.id}`)).rejects.toThrow(/decided/);
   });
 
-  it('remediation proposals are not handled yet (Task 17): accept throws NotImplementedError', async () => {
+  it('a remediation proposal without a session base script is refused and stays pending (Task 17 accepts real ones)', async () => {
     const w = await world();
-    const [r] = await sql<{ id: string }[]>`
+    const [noBase] = await sql<{ id: string }[]>`
       insert into public.proposals (owner_id, session_id, kind, base_version_id, proposed_content, summary, flags)
       values (${w.userId}, ${w.sessionId}, 'remediation', null, 'Write-Host fix', 'Fix', '[]'::jsonb) returning id`;
-    await expect(actions.acceptProposal({ proposalId: r.id, acknowledgedFlagIds: [] })).rejects.toBeInstanceOf(service.NotImplementedError);
-    expect((await proposalRow(r.id)).status).toBe('pending');
+    // A remediation is written against the SESSION's hardening script, never a universal one.
+    const [universalBase] = await sql<{ id: string }[]>`
+      insert into public.proposals (owner_id, session_id, kind, base_version_id, proposed_content, summary, flags)
+      values (${w.userId}, ${w.sessionId}, 'remediation', ${w.baseVersionId}, 'Write-Host fix', 'Fix', '[]'::jsonb) returning id`;
+    for (const r of [noBase!, universalBase!]) {
+      await expect(actions.acceptProposal({ proposalId: r.id, acknowledgedFlagIds: [] })).rejects.toBeInstanceOf(service.NotFoundError);
+      expect((await proposalRow(r.id)).status).toBe('pending');
+    }
+    expect(await scriptsInSession(w.sessionId)).toHaveLength(0);
   });
 
   it('completed session: accept and reject are refused', async () => {

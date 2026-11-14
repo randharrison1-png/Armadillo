@@ -136,6 +136,21 @@ export const MAX_ADAPT_FLAGS = 300;
 export const ADAPT_SUMMARY_MAX = 4000;
 export const FLAG_REASON_MAX = 500;
 
+/** The high-impact lines of a script Claude wrote (adaptation and remediation). */
+const FLAGS_PROPERTY = {
+  type: 'array',
+  maxItems: MAX_ADAPT_FLAGS,
+  items: {
+    type: 'object',
+    properties: {
+      category: { type: 'string', enum: [...FLAG_CATEGORIES] },
+      line: { type: 'integer', minimum: 1, description: '1-based line number in the script (content).' },
+      reason: { type: 'string', description: 'What the line could break or who it could lock out, briefly.' },
+    },
+    required: ['category', 'line', 'reason'],
+  },
+};
+
 export const ADAPT_TOOL: ClaudeTool = {
   name: 'record_adaptation',
   description:
@@ -151,19 +166,7 @@ export const ADAPT_TOOL: ClaudeTool = {
         type: 'string',
         description: 'First line: what changed, in one short sentence (it becomes the change note). Then any detail a reviewer needs, including README requirements left for a person to do.',
       },
-      flags: {
-        type: 'array',
-        maxItems: MAX_ADAPT_FLAGS,
-        items: {
-          type: 'object',
-          properties: {
-            category: { type: 'string', enum: [...FLAG_CATEGORIES] },
-            line: { type: 'integer', minimum: 1, description: '1-based line number in the adapted script (content).' },
-            reason: { type: 'string', description: 'What the line could break or who it could lock out, briefly.' },
-          },
-          required: ['category', 'line', 'reason'],
-        },
-      },
+      flags: FLAGS_PROPERTY,
     },
     required: ['content', 'summary', 'flags'],
   },
@@ -179,3 +182,65 @@ export const AdaptationSchema = z.object({
   flags: z.array(z.object({ category: z.enum(FLAG_CATEGORIES), line: z.number(), reason: clipped(FLAG_REASON_MAX) })).max(MAX_ADAPT_FLAGS),
 });
 export type Adaptation = z.infer<typeof AdaptationSchema>;
+
+// ------------------------------------------------------------------------------------------------
+// Targeted remediation (Task 17)
+// ------------------------------------------------------------------------------------------------
+
+export const REMEDIATE_TOOL: ClaudeTool = {
+  name: 'record_remediation',
+  description:
+    'Records a targeted remediation script for the failing findings of a LEADS report, a summary, and every high-impact line of that script. Call it exactly once. It only records your answer; nothing is saved until the user reviews and accepts it.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      content: {
+        type: 'string',
+        description:
+          'The COMPLETE remediation script, every line, ready to save as a new file. It fixes only the listed failing findings; it is not a copy of the hardening script. No Markdown code fences around it.',
+      },
+      summary: {
+        type: 'string',
+        description: 'First line: what the remediation fixes, in one short sentence (it becomes the change note). Then any detail a reviewer needs, including findings a person must fix by hand.',
+      },
+      flags: FLAGS_PROPERTY,
+    },
+    required: ['content', 'summary', 'flags'],
+  },
+};
+
+/** Same shape as an adaptation: complete script, summary, flags (wrong lines dropped by the caller). */
+export const RemediationSchema = AdaptationSchema;
+export type Remediation = Adaptation;
+
+export const MAX_MAPPINGS = 1000;
+
+export const MAP_TOOL: ClaudeTool = {
+  name: 'record_finding_mappings',
+  description:
+    'Records, for each listed LEADS finding, the session requirement it checks (or null when none does). Call it exactly once. It only records your suggestions; the user confirms each one.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      mappings: {
+        type: 'array',
+        maxItems: MAX_MAPPINGS,
+        items: {
+          type: 'object',
+          properties: {
+            finding: { type: 'string', description: 'The key of a listed finding, e.g. F3.' },
+            requirement: { type: ['string', 'null'], description: 'The key of the requirement the finding checks, e.g. R2; null when no listed requirement matches.' },
+          },
+          required: ['finding', 'requirement'],
+        },
+      },
+    },
+    required: ['mappings'],
+  },
+};
+
+export const MappingSchema = z.object({
+  // Keys are not required to exist here: unknown or repeated keys are dropped and counted, not retried.
+  mappings: z.array(z.object({ finding: z.string().trim().max(100), requirement: z.string().trim().max(100).nullable() })).max(MAX_MAPPINGS),
+});
+export type Mapping = z.infer<typeof MappingSchema>;

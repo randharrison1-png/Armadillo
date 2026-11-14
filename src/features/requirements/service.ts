@@ -361,6 +361,8 @@ type ViewRow = {
   source_index: number | null;
   script_label: string | null;
   evidence_label: string | null;
+  failing_report_id: string | null;
+  failing_label: string | null;
 };
 
 /** Everything the requirements tab shows for a session; null when the session is not the user's. */
@@ -389,8 +391,18 @@ export function getRequirementsViewFor(userId: string, sessionId: string): Promi
              r.suggestion, r.notes, r.script_version_id, r.evidence_report_id, r.reviewed_at,
              segs.kind as source_kind, segs.idx as source_index,
              case when sv.id is null then null else s.name || ' · v' || sv.version_no end as script_label,
-             case when lr.id is null then null else lr.filename || ' · cycle ' || lr.cycle_no end as evidence_label
+             case when lr.id is null then null else lr.filename || ' · cycle ' || lr.cycle_no end as evidence_label,
+             latest.id as failing_report_id,
+             case when latest.id is null then null else latest.filename || ' · cycle ' || latest.cycle_no end as failing_label
       from public.requirements r
+      -- "Failing in latest report": the newest report with a confirmed finding for r, if one failed there.
+      left join lateral (
+        select x.id, x.filename, x.cycle_no from public.leads_reports x
+        where x.id = (
+          select f.report_id from public.leads_findings f join public.leads_reports fr on fr.id = f.report_id
+          where f.requirement_id = r.id order by fr.created_at desc, fr.id desc limit 1)
+          and exists (select 1 from public.leads_findings f2 where f2.report_id = x.id and f2.requirement_id = r.id and f2.status = 'fail')
+      ) latest on true
       left join segs on segs.readme_id = r.readme_id and segs.seg_id = r.segment_id
       left join public.script_versions sv on sv.id = r.script_version_id
       left join public.scripts s on s.id = sv.script_id
@@ -427,6 +439,7 @@ export function getRequirementsViewFor(userId: string, sessionId: string): Promi
       evidenceReportId: r.evidence_report_id,
       evidenceLabel: r.evidence_label,
       reviewedAt: r.reviewed_at ? r.reviewed_at.toISOString() : null,
+      failingInLatest: r.failing_report_id && r.failing_label ? { reportId: r.failing_report_id, label: r.failing_label } : null,
     }));
     return { sessionStatus: status, readmes: readmeOptions, scriptOptions, requirements };
   });

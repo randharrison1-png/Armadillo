@@ -58,7 +58,7 @@ const COLUMNS: ColumnSet = {
   },
   leads_findings: {
     id: t, owner_id: t, created_at: t, updated_at: t, report_id: t, title: t, status: t, severity: t, category: t,
-    raw_line: t, requirement_id: t,
+    raw_line: t, requirement_id: t, suggested_requirement_id: t,
   },
   evidence: {
     id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, step: t, kind: t, storage_path: t,

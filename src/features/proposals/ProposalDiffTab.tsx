@@ -72,6 +72,8 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
   const { script, version } = view.base!;
   const editable = !readOnly;
   const universal = script.session_id === null;
+  // A remediation becomes a NEW script on accept: the left side is the hardening script for reference only.
+  const remediation = view.remediation;
 
   const key = draftKey(namespace, tabKey);
   const draft = useDrafts((s) => s.drafts[key]);
@@ -135,7 +137,7 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
 
   const openTab = (t: TabDescriptor) => getWorkspaceStore(namespace).getState().openTab(t);
   const latest = view.latestBaseVersion;
-  const staleBase = editable && !universal && !!latest && latest.id !== version.id;
+  const staleBase = editable && !remediation && !universal && !!latest && latest.id !== version.id;
   const shownConflict = conflict ?? (staleBase && latest ? { latestVersionId: latest.id, latestVersionNo: latest.version_no } : null);
   const canAccept = editable && busy === null && !scanning && ackedCount === flags.length && !shownConflict;
 
@@ -202,7 +204,9 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
   const nextNo = (latest?.version_no ?? version.version_no) + 1;
   const explanation = readOnly
     ? null
-    : universal
+    : remediation
+      ? `Accepting saves the right-hand side as a new session script, “${remediation.title}” (v1), to download and run after the hardening script. ${script.name} on the left is shown for reference and is not changed.`
+      : universal
       ? `Library script. Accepting saves a session copy of v${version.version_no} with the right-hand side as v2; the library script is not changed.`
       : `Session script. Accepting saves the right-hand side as v${nextNo}; earlier versions stay in the history.`;
 
@@ -218,14 +222,31 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
 
       <div className="flex shrink-0 flex-col gap-1 border-b border-border px-4 py-2">
         <h2 className="truncate text-body font-semibold text-text">
-          {script.name}: proposed adaptation of v{version.version_no}
+          {remediation ? `${remediation.title}: targeted remediation` : `${script.name}: proposed adaptation of v${version.version_no}`}
         </h2>
         <p className="flex flex-wrap gap-x-2 text-small text-muted">
-          <span className="font-mono text-text">{script.filename}</span>
-          <span aria-hidden>·</span>
-          <span>{universal ? 'Library script' : 'Session script'}</span>
-          <span aria-hidden>·</span>
-          <span>Left v{version.version_no}, right {proposal.status === 'accepted' && result ? `saved v${result.versionNo}` : "Claude's proposal"}</span>
+          {remediation ? (
+            <>
+              <span>
+                Left: {script.name} v{version.version_no} (hardening script, for reference); right:{' '}
+                {proposal.status === 'accepted' && result ? `${result.filename} v${result.versionNo}` : "Claude's remediation script"}
+              </span>
+              {remediation.reportFilename ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>Report {remediation.reportFilename}</span>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <span className="font-mono text-text">{script.filename}</span>
+              <span aria-hidden>·</span>
+              <span>{universal ? 'Library script' : 'Session script'}</span>
+              <span aria-hidden>·</span>
+              <span>Left v{version.version_no}, right {proposal.status === 'accepted' && result ? `saved v${result.versionNo}` : "Claude's proposal"}</span>
+            </>
+          )}
           {view.readmeLabel ? (
             <>
               <span aria-hidden>·</span>
@@ -245,7 +266,11 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
           <Check aria-hidden className="size-4 shrink-0 text-accent" />
           <span>
             Accepted as {result.filename} v{result.versionNo}
-            {universal ? `, a session copy of ${script.name} v${version.version_no}. The library script is unchanged.` : '.'}
+            {remediation
+              ? `, a new session script (${result.scriptName}). ${script.name} is unchanged.`
+              : universal
+                ? `, a session copy of ${script.name} v${version.version_no}. The library script is unchanged.`
+                : '.'}
           </span>
           <div className="ml-auto flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => openTab(scriptTab(result.scriptId, result.filename))}>
@@ -304,7 +329,7 @@ function ProposalReview({ view, namespace, tabKey, reload }: { view: ProposalVie
           language={version.language}
           lineEnding={version.line_ending}
           readOnly={readOnly}
-          ariaLabel={`${script.filename} proposal`}
+          ariaLabel={remediation ? `${remediation.title} proposal` : `${script.filename} proposal`}
           onModifiedEditor={(ed) => {
             editorRef.current = ed;
             setEditorReady(!!ed);

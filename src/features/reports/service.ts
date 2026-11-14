@@ -6,6 +6,8 @@ import { extensionOf, FileTooLargeError, limitFor, UnsupportedFileTypeError, ALL
 import { setStepStatusTx } from '@/features/flowchart/steps';
 import type { LeadsReport, StepStatus } from '@/lib/types';
 import { parseLeadsReport, type Finding } from './parsers';
+import { remediationTitle } from './remediationRules';
+import { latestHardeningScriptTx } from './sessionScripts';
 import { reportTextFromBytes, stripNul } from './text';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -191,11 +193,31 @@ export function getReportsOverviewFor(userId: string, sessionId: string): Promis
   });
 }
 
-export type ReportFinding = { id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; rawLine: number | null };
+export type ReportFinding = {
+  id: string;
+  title: string;
+  status: 'pass' | 'fail' | 'unknown';
+  severity: string | null;
+  category: string | null;
+  rawLine: number | null;
+  /** The requirement the user confirmed this finding checks (verification evidence). */
+  requirementId: string | null;
+  /** Claude's suggestion, waiting for the user's Confirm / Change / Clear. */
+  suggestedRequirementId: string | null;
+};
+export type ReportRequirement = { id: string; text: string; workState: 'proposed' | 'reported' | 'verified' };
 export type ReportDetail = {
   sessionStatus: 'active' | 'completed';
   report: Omit<ReportSummary, 'counts'> & { lineCount: number; truncated: boolean; parseError: string | null; parseNote: string | null };
   findings: ReportFinding[];
+  /** The session's requirements (matrix order), for mapping findings. */
+  requirements: ReportRequirement[];
+  remediation: {
+    /** e.g. "Session hardening · v2": what a remediation would be written against; null when the session has none. */
+    hardeningScript: string | null;
+    /** The remediation proposal recorded for this report's cycle row, if any. */
+    proposal: { id: string; status: 'pending' | 'accepted' | 'rejected'; title: string } | null;
+  };
 };
 
 /** One report (without its raw text) with its findings in report order. Null when it is not the user's or not in the session. */
@@ -208,9 +230,21 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
       select id, filename, cycle_no, created_at, parser, score, parsed from public.leads_reports
       where id = ${reportId} and session_id = ${sessionId}`;
     if (!r) return null;
-    const findings = await tx<{ id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; raw_line: number }[]>`
-      select id, title, status, severity, category, raw_line from public.leads_findings
+    const findings = await tx<
+      { id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; raw_line: number; requirement_id: string | null; suggested_requirement_id: string | null }[]
+    >`
+      select id, title, status, severity, category, raw_line, requirement_id, suggested_requirement_id from public.leads_findings
       where report_id = ${reportId} order by (raw_line = 0), raw_line, created_at, id`;
+    const requirements = await tx<{ id: string; text: string; work_state: ReportRequirement['workState'] }[]>`
+      select id, text, work_state from public.requirements where session_id = ${sessionId} order by created_at, id limit 1000`;
+    const hardening = await latestHardeningScriptTx(tx, sessionId);
+    const [proposal] = await tx<{ id: string; status: 'pending' | 'accepted' | 'rejected'; cycle_no: number; name: string | null }[]>`
+      select p.id, p.status, rc.cycle_no, s.name
+      from public.remediation_cycles rc join public.proposals p on p.id = rc.proposal_id
+      left join public.script_versions v on v.id = p.result_version_id
+      left join public.scripts s on s.id = v.script_id
+      where rc.session_id = ${sessionId} and rc.report_id = ${reportId}
+      order by rc.cycle_no desc limit 1`;
     return {
       sessionStatus: session.status,
       report: {
@@ -226,7 +260,21 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
         parseError: r.parsed.parseError ?? null,
         parseNote: r.parsed.parseNote ?? null,
       },
-      findings: findings.map((f) => ({ id: f.id, title: f.title, status: f.status, severity: f.severity, category: f.category, rawLine: f.raw_line > 0 ? f.raw_line : null })),
+      findings: findings.map((f) => ({
+        id: f.id,
+        title: f.title,
+        status: f.status,
+        severity: f.severity,
+        category: f.category,
+        rawLine: f.raw_line > 0 ? f.raw_line : null,
+        requirementId: f.requirement_id,
+        suggestedRequirementId: f.suggested_requirement_id,
+      })),
+      requirements: requirements.map((q) => ({ id: q.id, text: q.text, workState: q.work_state })),
+      remediation: {
+        hardeningScript: hardening ? `${hardening.script.name} · v${hardening.version.version_no}` : null,
+        proposal: proposal ? { id: proposal.id, status: proposal.status, title: proposal.name ?? remediationTitle(proposal.cycle_no) } : null,
+      },
     };
   });
 }

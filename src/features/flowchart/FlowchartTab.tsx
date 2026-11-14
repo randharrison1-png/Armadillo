@@ -172,7 +172,7 @@ export function FlowchartTab({ namespace: sessionId }: { namespace: string; tab:
   const ctx = useMemo(
     () =>
       load.state === 'ready'
-        ? { sessionId, latestReport: load.data.latestReport, latestSessionScript: load.data.latestSessionScript }
+        ? { sessionId, latestReport: load.data.latestReport, latestSessionScript: load.data.latestSessionScript, latestRemediation: load.data.latestRemediation }
         : null,
     [load, sessionId],
   );
@@ -248,7 +248,15 @@ export function FlowchartTab({ namespace: sessionId }: { namespace: string; tab:
 
   const sections = useMemo(() => {
     if (!ready || !selected) return [];
-    if (selected === DECISION_ID) return [{ id: 'flow-node', title: 'Decision: final point check', content: <DecisionPanel /> }];
+    if (selected === DECISION_ID) {
+      return [
+        {
+          id: 'flow-node',
+          title: 'Decision: final point check',
+          content: <DecisionPanel sessionId={sessionId} currentCycle={ready.currentCycle} decision={ready.decision} cycles={ready.cycles} onChanged={onChanged} />,
+        },
+      ];
+    }
     const step = selected as StepKey;
     const state = ready.steps.find((s) => s.step === step);
     const route = routeOf(step);

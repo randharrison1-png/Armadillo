@@ -9,7 +9,12 @@ import { mergeFlags, missingAcknowledgements, requiredFlags, resolveClaudeFlags,
 import { MAX_TEXT_BYTES } from '@/server/files/limits';
 import { NO_TEXT_MESSAGE } from '@/features/readme/messages';
 import { NotFoundError, SessionReadOnlyError } from '@/features/readme/service';
-import { forkToSessionTx, normalizeForLineEnding, saveScriptVersionTx } from '@/features/library/versioning';
+import { insertScriptWithV1 } from '@/features/library/service';
+import { ContentTooLargeError, forkToSessionTx, normalizeForLineEnding, saveScriptVersionTx } from '@/features/library/versioning';
+import { remediationScriptIdentity, remediationTitle } from '@/features/reports/remediationRules';
+import { lineEndingOf } from '@/server/files/encoding';
+import { cp1252Encodable } from '@/lib/cp1252';
+import { defaultFormat } from '@/features/library/scriptMeta';
 import type { Coverage, HighImpactFlag, Proposal, Script, ScriptVersion } from '@/lib/types';
 import type { AdaptationOptions, ProposalView } from './types';
 
@@ -75,7 +80,7 @@ export class ProposalConflictError extends Error {
   }
 }
 
-/** Kind 'remediation' is Task 17's (ruling R6): it will create a new session script at v1. */
+/** Something proposals cannot do (e.g. re-proposing a remediation: make a new one from its report). */
 export class NotImplementedError extends Error {
   readonly name = 'NotImplementedError';
   constructor(what: string) {
@@ -115,7 +120,7 @@ const readmeLabel = (r: { created_at: Date; source: string; filename: string | n
   `${dateLabel(r.created_at)} · ${r.source === 'upload' ? (r.filename ?? 'file') : 'pasted'}`;
 
 /** Claude was told not to, but a whole script wrapped in one Markdown fence is unwrapped (never for Markdown files). */
-function unfence(content: string, language: ScriptVersion['language']): string {
+export function unfence(content: string, language: ScriptVersion['language']): string {
   if (language === 'markdown') return content;
   const m = /^\s*```[\w+-]*[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*\s*$/.exec(content);
   return m ? `${m[1]}\n` : content;
@@ -268,12 +273,97 @@ export async function reproposeAdaptationFor(userId: string, proposalId: string)
 
 export type AcceptResult = { version: ScriptVersion; script: Script; forked: boolean; unchanged: boolean };
 
-async function lockProposal(tx: Tx, proposalId: string): Promise<{ proposal: Proposal; sessionStatus: 'active' | 'completed' }> {
-  const [proposal] = UUID_RE.test(proposalId) ? await tx<Proposal[]>`select * from public.proposals where id = ${proposalId} for update` : [];
-  if (!proposal) throw new NotFoundError('Proposal');
-  const [session] = await tx<{ status: 'active' | 'completed' }[]>`select status from public.sessions where id = ${proposal.session_id}`;
+/**
+ * Lock order (app-wide, flowchart/steps.ts): the proposal's sessions row FIRST (FOR NO KEY UPDATE),
+ * then the proposal row, then child rows. Accepting inserts session children (scripts), and a cycle
+ * decision holds the session row FOR UPDATE, so taking the proposal first could deadlock.
+ */
+async function lockProposal(tx: Tx, proposalId: string): Promise<{ proposal: Proposal; sessionStatus: 'active' | 'completed'; currentCycle: number }> {
+  const [ref] = UUID_RE.test(proposalId) ? await tx<{ session_id: string }[]>`select session_id from public.proposals where id = ${proposalId}` : [];
+  if (!ref) throw new NotFoundError('Proposal');
+  const [session] = await tx<{ status: 'active' | 'completed'; current_cycle: number }[]>`
+    select status, current_cycle from public.sessions where id = ${ref.session_id} for no key update`;
   if (!session) throw new NotFoundError();
-  return { proposal, sessionStatus: session.status };
+  const [proposal] = await tx<Proposal[]>`select * from public.proposals where id = ${proposalId} for update`;
+  if (!proposal) throw new NotFoundError('Proposal');
+  return { proposal, sessionStatus: session.status, currentCycle: session.current_cycle };
+}
+
+/** The audit cycle a remediation proposal belongs to: its remediation_cycles row, else the session's current cycle. */
+async function remediationCycleOf(tx: Tx, proposalId: string, currentCycle: number): Promise<{ cycleNo: number; reportId: string | null; reportFilename: string | null }> {
+  const [c] = await tx<{ cycle_no: number; report_id: string | null; filename: string | null }[]>`
+    select rc.cycle_no, rc.report_id, lr.filename from public.remediation_cycles rc
+    left join public.leads_reports lr on lr.id = rc.report_id
+    where rc.proposal_id = ${proposalId} order by rc.cycle_no desc limit 1`;
+  return c ? { cycleNo: c.cycle_no, reportId: c.report_id, reportFilename: c.filename } : { cycleNo: currentCycle, reportId: null, reportFilename: null };
+}
+
+const tooLarge = (s: string) => new TextEncoder().encode(s).length > MAX_TEXT_BYTES;
+
+/**
+ * Accepting a remediation (ruling R6): the final text becomes v1 (author 'claude') of a NEW session
+ * script "Remediation — Cycle n" (function session_generated; category, OS and format from the base
+ * script; filename `remediation-cycle-n<base extension>`). The base script is never changed. Same
+ * flag gate and re-scan as an adaptation. The cycle's remediation_cycles row is pointed at this
+ * proposal. Runs inside acceptProposalFor's transaction, after its locks.
+ */
+async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ack: string[], edited: string | undefined): Promise<AcceptResult> {
+  const [base] = p.base_version_id ? await tx<ScriptVersion[]>`select * from public.script_versions where id = ${p.base_version_id}` : [];
+  const [baseScript] = base ? await tx<Script[]>`select * from public.scripts where id = ${base.script_id}` : [];
+  if (!base || !baseScript || baseScript.session_id !== p.session_id) throw new NotFoundError('Script version');
+
+  const final = normalizeForLineEnding(edited ?? p.proposed_content, base.line_ending);
+  if (tooLarge(final)) throw new ContentTooLargeError();
+  const required = requiredFlags(Array.isArray(p.flags) ? p.flags : [], final, base.language);
+  const missing = missingAcknowledgements(required, ack);
+  if (missing.length) throw new FlagsNotAcknowledgedError(missing);
+
+  const cycle = await remediationCycleOf(tx, p.id, currentCycle);
+  const names = await tx<{ name: string }[]>`select name from public.scripts where session_id = ${p.session_id}`;
+  const { name, filename } = remediationScriptIdentity(cycle.cycleNo, baseScript.filename, names.map((n) => n.name));
+  const wasEdited = final !== p.proposed_content;
+  const changeNote = `Claude remediation${wasEdited ? ' (edited before accepting)' : ''}: ${firstLine(p.summary)}`.slice(0, CHANGE_NOTE_MAX);
+  // ANSI scripts that gained characters Windows-1252 cannot store are written as UTF-8 (as saves do).
+  const encoding = base.encoding === 'windows-1252' && !cp1252Encodable(final) ? defaultFormat(filename).encoding : base.encoding;
+  const script = await insertScriptWithV1(tx, {
+    name,
+    filename,
+    category: baseScript.category,
+    fn: 'session_generated',
+    description: `Targeted remediation for audit cycle ${cycle.cycleNo}, proposed by Claude and accepted after review.`,
+    osCompat: baseScript.os_compat,
+    content: final,
+    format: { encoding, lineEnding: base.line_ending === 'mixed' ? lineEndingOf(final) : base.line_ending },
+    language: base.language,
+    sessionId: p.session_id,
+    author: 'claude',
+    changeNote,
+    activity: { action: 'script.remediation', meta: { proposalId: p.id, cycle: cycle.cycleNo } },
+  });
+  const [version] = await tx<ScriptVersion[]>`select * from public.script_versions where id = ${script.current_version_id}`;
+
+  await tx`update public.proposals set status = 'accepted', result_version_id = ${version!.id}, updated_at = now() where id = ${p.id}`;
+  await tx`
+    update public.remediation_cycles set proposal_id = ${p.id}
+    where session_id = ${p.session_id} and cycle_no = ${cycle.cycleNo} and proposal_id is distinct from ${p.id}`;
+  await logActivity(tx, {
+    action: 'proposal.accept',
+    entityType: 'proposal',
+    entityId: p.id,
+    sessionId: p.session_id,
+    meta: {
+      kind: p.kind,
+      acknowledgedFlagIds: required.map((f) => f.id),
+      baseVersionId: base.id,
+      resultVersionId: version!.id,
+      scriptId: script.id,
+      cycle: cycle.cycleNo,
+      forked: false,
+      edited: wasEdited,
+      unchanged: false,
+    },
+  });
+  return { version: version!, script, forked: false, unchanged: false };
 }
 
 /**
@@ -285,7 +375,7 @@ async function lockProposal(tx: Tx, proposalId: string): Promise<{ proposal: Pro
  *     fork as Claude (v2). Session base → save on that script with base = the proposal's base version;
  *     if the script moved on, ProposalConflictError (nothing written, proposal stays pending);
  *  4. proposal → accepted with result_version_id; activity logged with the acknowledged flag ids.
- * Kind 'remediation' throws NotImplementedError (Task 17 extends this branch).
+ * Kind 'remediation': steps 1–2 alike, then a NEW session script at v1 (acceptRemediationTx).
  */
 export function acceptProposalFor(
   userId: string,
@@ -296,10 +386,10 @@ export function acceptProposalFor(
   const edited = typeof input.editedContent === 'string' ? input.editedContent : undefined;
   return writing(() =>
     withUser(userId, async (tx) => {
-      const { proposal: p, sessionStatus } = await lockProposal(tx, proposalId);
+      const { proposal: p, sessionStatus, currentCycle } = await lockProposal(tx, proposalId);
       if (sessionStatus === 'completed') throw new SessionReadOnlyError();
       if (p.status !== 'pending') throw new ProposalStateError(p.status);
-      if (p.kind === 'remediation') throw new NotImplementedError('Accepting a remediation proposal');
+      if (p.kind === 'remediation') return acceptRemediationTx(tx, p, currentCycle, ack, edited);
 
       const [base] = p.base_version_id ? await tx<ScriptVersion[]>`select * from public.script_versions where id = ${p.base_version_id}` : [];
       const [baseScript] = base ? await tx<Script[]>`select * from public.scripts where id = ${base.script_id}` : [];
@@ -374,7 +464,8 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
   return withUser(userId, async (tx) => {
     const [proposal] = await tx<Proposal[]>`select * from public.proposals where id = ${proposalId}`;
     if (!proposal) return null;
-    const [session] = await tx<{ status: 'active' | 'completed' }[]>`select status from public.sessions where id = ${proposal.session_id}`;
+    const [session] = await tx<{ status: 'active' | 'completed'; current_cycle: number }[]>`
+      select status, current_cycle from public.sessions where id = ${proposal.session_id}`;
     const [version] = proposal.base_version_id ? await tx<ScriptVersion[]>`select * from public.script_versions where id = ${proposal.base_version_id}` : [];
     const [script] = version ? await tx<Script[]>`select * from public.scripts where id = ${version.script_id}` : [];
     const [latest] = script?.current_version_id
@@ -389,6 +480,7 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
           from public.script_versions v join public.scripts s on s.id = v.script_id where v.id = ${proposal.result_version_id}`
       : [];
     const sessionStatus = session?.status ?? 'completed';
+    const cycle = proposal.kind === 'remediation' ? await remediationCycleOf(tx, proposal.id, session?.current_cycle ?? 1) : null;
     return {
       proposal: { ...proposal, flags: Array.isArray(proposal.flags) ? proposal.flags : [] },
       base: version && script ? { script, version } : null,
@@ -399,6 +491,7 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
       result: result
         ? { versionId: result.version_id, versionNo: result.version_no, scriptId: result.script_id, scriptName: result.name, filename: result.filename, content: result.content }
         : null,
+      remediation: cycle ? { cycleNo: cycle.cycleNo, title: remediationTitle(cycle.cycleNo), reportId: cycle.reportId, reportFilename: cycle.reportFilename } : null,
     };
   });
 }

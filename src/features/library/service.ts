@@ -102,11 +102,15 @@ type NewScript = {
   /** Session-scoped script (null/undefined ⇒ universal). */
   sessionId?: string | null;
   forkedFromVersionId?: string | null;
+  /** Who wrote version 1 (default 'user'). 'claude' only for a session script (an accepted remediation). */
+  author?: 'user' | 'claude';
   activity: { action: string; meta?: Record<string, unknown> };
 };
 
 /** Script row + version 1 + current_version_id + activity entry, inside the caller's transaction. */
 export async function insertScriptWithV1(tx: Tx, n: NewScript): Promise<Script> {
+  // Claude never writes universal scripts (spec §5.1: the library source is never silently overwritten).
+  if (n.author === 'claude' && !n.sessionId) throw new Error('Claude can only write session scripts');
   const [row] = await tx<Script[]>`
     insert into public.scripts (name, filename, category, function, description, os_compat, session_id, forked_from_version_id)
     values (${n.name}, ${n.filename}, ${n.category}::public.script_category, ${n.fn}::public.script_function,
@@ -117,7 +121,7 @@ export async function insertScriptWithV1(tx: Tx, n: NewScript): Promise<Script> 
     insert into public.script_versions
       (script_id, version_no, content, encoding, line_ending, language, sha256, author, change_note, base_version_id)
     values (${row!.id}, 1, ${n.content}, ${n.format.encoding}::public.text_encoding, ${n.format.lineEnding},
-            ${n.language ?? languageFor(n.filename)}::public.script_language, ${n.sha256 ?? sha256Hex(n.content)}, 'user',
+            ${n.language ?? languageFor(n.filename)}::public.script_language, ${n.sha256 ?? sha256Hex(n.content)}, ${n.author ?? 'user'},
             ${n.changeNote ?? null}, ${n.baseVersionId ?? null})
     returning id`;
   const [script] = await tx<Script[]>`
