@@ -464,6 +464,9 @@ describe('context in the gateway', () => {
     expect(body.system).toMatch(/untrusted_document/);
     const turn = lastUserText(req);
     expect(turn.split('</untrusted_document').length - 1).toBe(1);
+    const nonce = turn.match(/<untrusted_document_([0-9a-f]+) /)![1];
+    expect(body.system).toContain(`untrusted_document_${nonce}`);
+    expect(turn).toContain(`</untrusted_document_${nonce}>`);
     expect(turn.trimEnd().endsWith('Summarize')).toBe(true);
   });
 
@@ -480,6 +483,25 @@ describe('context in the gateway', () => {
     expect(msgs.map((m) => [m.role, m.status])).toEqual([['user', 'complete'], ['assistant', 'error']]);
     expect(msgs[1].usage).toMatchObject({ error: 'forbidden' });
     expect(JSON.stringify(mock.requests())).not.toContain('Not yours.');
+  });
+
+  it('after a forbidden turn the next message sends neither the errored reply nor consecutive user turns', async () => {
+    const s = await fresh();
+    const stranger = await createTestUser();
+    const other = await createSessionFor(stranger.id, { title: 'Theirs', os: 'linux' });
+    const theirs = await addReadmeFor(stranger.id, { sessionId: other.id, pasted: 'Not yours.' });
+    const first = await send({ sessionId: s.id, text: 'first question', refs: [{ type: 'readme', id: theirs.id }] });
+    expect(first.last.data).toMatchObject({ code: 'forbidden' });
+    mock.enqueue({ chunks: ['fine'] });
+    const second = await send({ sessionId: s.id, conversationId: first.start!.conversationId as string, text: 'second question', refs: [] });
+    expect(second.last.event).toBe('done');
+    const [req] = mock.requests();
+    const msgs = (req.body as { messages: { role: string; content: unknown }[] }).messages;
+    expect(msgs.map((m) => m.role)).toEqual(['user']); // alternating, starts with user, no errored reply
+    const sent = JSON.stringify(msgs);
+    expect(sent).toContain('first question');
+    expect(sent).toContain('second question');
+    expect(sent).not.toContain('Not yours.');
   });
 
   it('Retry re-checks the stored refs: a ref that became unavailable is refused', async () => {

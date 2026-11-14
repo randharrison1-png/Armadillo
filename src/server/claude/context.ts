@@ -1,7 +1,7 @@
 import 'server-only';
 import type { OsType, ResourceRef } from '@/lib/types';
 import { withUser, type Tx } from '@/server/db/withUser';
-import { allocateBodies, type RenderableDoc } from './documents';
+import { allocateBodies, newNonce, type RenderableDoc } from './documents';
 import { buildSystemPrompt } from './prompts/system';
 
 /** The user's message names a resource Claude may not see in this session. Messages are user-facing. */
@@ -19,6 +19,8 @@ export type AssembledContext = {
   documents: string;
   /** Selected resources that were shortened to fit the budget. */
   trimmed: ResourceRef[];
+  /** The per-request code in the tag names and segment markers (see documents.ts). */
+  nonce: string;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -40,12 +42,12 @@ const LOADERS: Record<ResourceRef['type'], Loader> = {
       select id, filename, source, text, segments from public.readmes where id = ${id} and session_id = ${sessionId}`;
     if (!r) return null;
     const segments = Array.isArray(r.segments) ? r.segments : [];
-    const body = segments.length ? segments.map((s) => `[seg ${s.id}]\n${s.text}`).join('\n\n') : r.text;
     return {
       ref: { type: 'readme', id: r.id },
       title: r.filename ?? 'Pasted README',
       head: [line('source', r.source), ...(r.filename ? [line('filename', r.filename)] : [])].join('\n'),
-      body,
+      body: r.text,
+      ...(segments.length ? { segments } : {}),
       fenced: false,
     };
   },
@@ -102,6 +104,8 @@ export async function buildContext(input: {
   sessionId: string;
   refs: ResourceRef[];
   budgetTokens: number;
+  /** Tests only; production uses a fresh random nonce. */
+  nonce?: string;
 }): Promise<AssembledContext> {
   const { userId, sessionId, budgetTokens } = input;
   if (!UUID_RE.test(sessionId) || input.refs.length > MAX_REFS) throw new ForbiddenError();
@@ -123,6 +127,7 @@ export async function buildContext(input: {
     return { session: row, docs: loaded };
   });
 
-  const { blocks, trimmed } = allocateBodies(docs, budgetTokens);
-  return { system: buildSystemPrompt(session), documents: blocks.join('\n\n'), trimmed };
+  const nonce = input.nonce ?? newNonce();
+  const { blocks, trimmed } = allocateBodies(docs, budgetTokens, nonce);
+  return { system: buildSystemPrompt(session, nonce), documents: blocks.join('\n\n'), trimmed, nonce };
 }
