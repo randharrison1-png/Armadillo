@@ -11,7 +11,7 @@ import { NO_TEXT_MESSAGE } from '@/features/readme/messages';
 import { NotFoundError, SessionReadOnlyError } from '@/features/readme/service';
 import { insertScriptWithV1 } from '@/features/library/service';
 import { ContentTooLargeError, forkToSessionTx, normalizeForLineEnding, saveScriptVersionTx } from '@/features/library/versioning';
-import { remediationScriptIdentity, remediationTitle } from '@/features/reports/remediationRules';
+import { remediationScriptIdentity, remediationTitle, staleRemediationReason } from '@/features/reports/remediationRules';
 import { lineEndingOf } from '@/server/files/encoding';
 import { cp1252Encodable } from '@/lib/cp1252';
 import { defaultFormat } from '@/features/library/scriptMeta';
@@ -77,6 +77,14 @@ export class ProposalConflictError extends Error {
     readonly baseVersionNo: number,
   ) {
     super(`v${latest.version_no} of this script was saved after Claude's proposal (based on v${baseVersionNo}). Nothing was overwritten.`);
+  }
+}
+
+/** A remediation proposed in an earlier cycle cannot be accepted in a later one. Nothing is written. */
+export class StaleRemediationError extends Error {
+  readonly name = 'StaleRemediationError';
+  constructor(readonly proposalCycle: number | null) {
+    super(staleRemediationReason(proposalCycle));
   }
 }
 
@@ -289,13 +297,11 @@ async function lockProposal(tx: Tx, proposalId: string): Promise<{ proposal: Pro
   return { proposal, sessionStatus: session.status, currentCycle: session.current_cycle };
 }
 
-/** The audit cycle a remediation proposal belongs to: its remediation_cycles row, else the session's current cycle. */
-async function remediationCycleOf(tx: Tx, proposalId: string, currentCycle: number): Promise<{ cycleNo: number; reportId: string | null; reportFilename: string | null }> {
-  const [c] = await tx<{ cycle_no: number; report_id: string | null; filename: string | null }[]>`
-    select rc.cycle_no, rc.report_id, lr.filename from public.remediation_cycles rc
-    left join public.leads_reports lr on lr.id = rc.report_id
-    where rc.proposal_id = ${proposalId} order by rc.cycle_no desc limit 1`;
-  return c ? { cycleNo: c.cycle_no, reportId: c.report_id, reportFilename: c.filename } : { cycleNo: currentCycle, reportId: null, reportFilename: null };
+/** The LEADS report filename a remediation proposal answers (its own report_id), or null. */
+async function reportFilenameOf(tx: Tx, reportId: string | null): Promise<string | null> {
+  if (!reportId) return null;
+  const [r] = await tx<{ filename: string }[]>`select filename from public.leads_reports where id = ${reportId}`;
+  return r?.filename ?? null;
 }
 
 const tooLarge = (s: string) => new TextEncoder().encode(s).length > MAX_TEXT_BYTES;
@@ -304,13 +310,17 @@ const tooLarge = (s: string) => new TextEncoder().encode(s).length > MAX_TEXT_BY
  * Accepting a remediation (ruling R6): the final text becomes v1 (author 'claude') of a NEW session
  * script "Remediation — Cycle n" (function session_generated; category, OS and format from the base
  * script; filename `remediation-cycle-n<base extension>`). The base script is never changed. Same
- * flag gate and re-scan as an adaptation. The cycle's remediation_cycles row is pointed at this
- * proposal. Runs inside acceptProposalFor's transaction, after its locks.
+ * flag gate and re-scan as an adaptation. Refused (StaleRemediationError) when the proposal's
+ * cycle_no is not the session's current cycle: the script is named after proposal.cycle_no and the
+ * cycle's remediation_cycles row is pointed at this proposal, so only the current cycle's record is
+ * ever touched. Runs inside acceptProposalFor's transaction, after its locks (session row first).
  */
 async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ack: string[], edited: string | undefined): Promise<AcceptResult> {
   const [base] = p.base_version_id ? await tx<ScriptVersion[]>`select * from public.script_versions where id = ${p.base_version_id}` : [];
   const [baseScript] = base ? await tx<Script[]>`select * from public.scripts where id = ${base.script_id}` : [];
   if (!base || !baseScript || baseScript.session_id !== p.session_id) throw new NotFoundError('Script version');
+  if (p.cycle_no === null || p.cycle_no !== currentCycle) throw new StaleRemediationError(p.cycle_no);
+  const cycleNo = p.cycle_no;
 
   const final = normalizeForLineEnding(edited ?? p.proposed_content, base.line_ending);
   if (tooLarge(final)) throw new ContentTooLargeError();
@@ -318,9 +328,8 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
   const missing = missingAcknowledgements(required, ack);
   if (missing.length) throw new FlagsNotAcknowledgedError(missing);
 
-  const cycle = await remediationCycleOf(tx, p.id, currentCycle);
   const names = await tx<{ name: string }[]>`select name from public.scripts where session_id = ${p.session_id}`;
-  const { name, filename } = remediationScriptIdentity(cycle.cycleNo, baseScript.filename, names.map((n) => n.name));
+  const { name, filename } = remediationScriptIdentity(cycleNo, baseScript.filename, names.map((n) => n.name));
   const wasEdited = final !== p.proposed_content;
   const changeNote = `Claude remediation${wasEdited ? ' (edited before accepting)' : ''}: ${firstLine(p.summary)}`.slice(0, CHANGE_NOTE_MAX);
   // ANSI scripts that gained characters Windows-1252 cannot store are written as UTF-8 (as saves do).
@@ -330,7 +339,7 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
     filename,
     category: baseScript.category,
     fn: 'session_generated',
-    description: `Targeted remediation for audit cycle ${cycle.cycleNo}, proposed by Claude and accepted after review.`,
+    description: `Targeted remediation for audit cycle ${cycleNo}, proposed by Claude and accepted after review.`,
     osCompat: baseScript.os_compat,
     content: final,
     format: { encoding, lineEnding: base.line_ending === 'mixed' ? lineEndingOf(final) : base.line_ending },
@@ -338,14 +347,14 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
     sessionId: p.session_id,
     author: 'claude',
     changeNote,
-    activity: { action: 'script.remediation', meta: { proposalId: p.id, cycle: cycle.cycleNo } },
+    activity: { action: 'script.remediation', meta: { proposalId: p.id, cycle: cycleNo } },
   });
   const [version] = await tx<ScriptVersion[]>`select * from public.script_versions where id = ${script.current_version_id}`;
 
   await tx`update public.proposals set status = 'accepted', result_version_id = ${version!.id}, updated_at = now() where id = ${p.id}`;
   await tx`
     update public.remediation_cycles set proposal_id = ${p.id}
-    where session_id = ${p.session_id} and cycle_no = ${cycle.cycleNo} and proposal_id is distinct from ${p.id}`;
+    where session_id = ${p.session_id} and cycle_no = ${cycleNo} and proposal_id is distinct from ${p.id}`;
   await logActivity(tx, {
     action: 'proposal.accept',
     entityType: 'proposal',
@@ -357,7 +366,7 @@ async function acceptRemediationTx(tx: Tx, p: Proposal, currentCycle: number, ac
       baseVersionId: base.id,
       resultVersionId: version!.id,
       scriptId: script.id,
-      cycle: cycle.cycleNo,
+      cycle: cycleNo,
       forked: false,
       edited: wasEdited,
       unchanged: false,
@@ -480,7 +489,8 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
           from public.script_versions v join public.scripts s on s.id = v.script_id where v.id = ${proposal.result_version_id}`
       : [];
     const sessionStatus = session?.status ?? 'completed';
-    const cycle = proposal.kind === 'remediation' ? await remediationCycleOf(tx, proposal.id, session?.current_cycle ?? 1) : null;
+    const cycleNo = proposal.kind === 'remediation' ? (proposal.cycle_no ?? session?.current_cycle ?? 1) : null;
+    const reportFilename = cycleNo !== null ? await reportFilenameOf(tx, proposal.report_id) : null;
     return {
       proposal: { ...proposal, flags: Array.isArray(proposal.flags) ? proposal.flags : [] },
       base: version && script ? { script, version } : null,
@@ -491,7 +501,7 @@ export function getProposalViewFor(userId: string, proposalId: string): Promise<
       result: result
         ? { versionId: result.version_id, versionNo: result.version_no, scriptId: result.script_id, scriptName: result.name, filename: result.filename, content: result.content }
         : null,
-      remediation: cycle ? { cycleNo: cycle.cycleNo, title: remediationTitle(cycle.cycleNo), reportId: cycle.reportId, reportFilename: cycle.reportFilename } : null,
+      remediation: cycleNo !== null ? { cycleNo, title: remediationTitle(cycleNo), reportId: proposal.report_id, reportFilename } : null,
     };
   });
 }

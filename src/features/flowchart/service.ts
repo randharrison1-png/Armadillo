@@ -82,9 +82,8 @@ export function getFlowchartDataFor(userId: string, sessionId: string): Promise<
         and ${notRemediationScript(tx)}
       order by s.updated_at desc, s.created_at desc, s.id limit 1`;
     const [remediation] = await tx<{ id: string; status: 'pending' | 'accepted'; cycle_no: number | null; script_id: string | null; name: string | null; filename: string | null }[]>`
-      select p.id, p.status, rc.cycle_no, s.id as script_id, s.name, s.filename
+      select p.id, p.status, p.cycle_no, s.id as script_id, s.name, s.filename
       from public.proposals p
-      left join public.remediation_cycles rc on rc.proposal_id = p.id
       left join public.script_versions v on v.id = p.result_version_id
       left join public.scripts s on s.id = v.script_id
       where p.session_id = ${sessionId} and p.kind = 'remediation' and p.status <> 'rejected'

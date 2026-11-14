@@ -50,7 +50,7 @@ const COLUMNS: ColumnSet = {
   },
   proposals: {
     id: t, owner_id: t, created_at: t, updated_at: t, conversation_id: t, session_id: t, kind: t, base_version_id: t,
-    proposed_content: t, summary: t, flags: t, status: t, result_version_id: t, readme_id: t,
+    proposed_content: t, summary: t, flags: t, status: t, result_version_id: t, readme_id: t, cycle_no: t, report_id: t,
   },
   leads_reports: {
     id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, cycle_no: t, filename: t, storage_path: t,

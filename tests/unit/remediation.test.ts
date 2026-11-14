@@ -3,6 +3,7 @@ import { remediationFindingsData, remediationRequirementsData, remediationInstru
 import {
   decisionAvailability,
   planVerification,
+  remediationBlockedReason,
   remediationScriptIdentity,
   remediableFindings,
   skippedMessages,
@@ -170,7 +171,13 @@ describe('decisionAvailability', () => {
       enabled: false,
       reason: 'Mark “Check final points” Complete and Verified first',
     });
-    expect(decisionAvailability({ ...base, outcome: 'completed' }).complete).toEqual({ enabled: false, reason: 'Cycle 1 is already marked complete' });
+  });
+
+  it('Mark complete is final: afterwards neither action is available', () => {
+    expect(decisionAvailability({ ...base, outcome: 'completed' })).toEqual({
+      complete: { enabled: false, reason: 'This audit is marked complete' },
+      continue: { enabled: false, reason: 'This audit is marked complete' },
+    });
   });
 
   it('Start another cycle needs a LEADS report in the current cycle', () => {
@@ -207,5 +214,20 @@ describe('toolRouteFor(run_remediation)', () => {
   it('without a remediation, opens the latest report to propose one', () => {
     expect(toolRouteFor('run_remediation', ctx())).toMatchObject({ kind: 'report', resourceId: 'r1', label: 'Propose remediation from the latest report' });
     expect(toolRouteFor('run_remediation', ctx({ latestReport: null }))).toMatchObject({ kind: 'report', disabledReason: 'Upload a LEADS report first' });
+  });
+});
+
+describe('remediationBlockedReason', () => {
+  const ok = { sessionStatus: 'active' as const, reportCycle: 2, currentCycle: 2, outcome: 'open' as const, hasHardeningScript: true, findings: [{ status: 'fail' as const }] };
+  it('allows a failing report of the current cycle', () => {
+    expect(remediationBlockedReason(ok)).toBeNull();
+    expect(remediationBlockedReason({ ...ok, outcome: null, findings: [] })).toBeNull(); // unparsed report: Claude reads it
+  });
+  it('refuses a report of another cycle, a completed audit, a read-only session, no script, all passing', () => {
+    expect(remediationBlockedReason({ ...ok, reportCycle: 1 })).toBe('This report is from cycle 1. Propose a remediation from a report of the current cycle (2).');
+    expect(remediationBlockedReason({ ...ok, outcome: 'completed' })).toBe('This audit is marked complete');
+    expect(remediationBlockedReason({ ...ok, sessionStatus: 'completed' })).toBe('This session is completed and read-only');
+    expect(remediationBlockedReason({ ...ok, hasHardeningScript: false })).toMatch(/no hardening script/);
+    expect(remediationBlockedReason({ ...ok, findings: [{ status: 'pass' }] })).toMatch(/nothing to remediate/);
   });
 });

@@ -26,7 +26,7 @@ import {
 } from './actions';
 import { MAX_FINDINGS } from './parsers/shared';
 import { reportTab, useReportUi } from './reportUi';
-import { READ_ONLY_REASON, remediableFindings } from './remediationRules';
+import { READ_ONLY_REASON, remediationBlockedReason } from './remediationRules';
 import type { ReportDetail, ReportFinding, ReportRequirement, ReportsOverview, ReportSummary } from './service';
 import { UploadReport } from './UploadReport';
 
@@ -160,7 +160,7 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
   if (load.state === 'error') return <ErrorState title="Could not load the report" detail="Check your connection and try again." onRetry={retry} />;
   if (load.state === 'missing') return <EmptyState icon={ScrollText} title="Report not found" description="This report no longer exists." />;
 
-  const { report, findings, requirements, remediation, sessionStatus } = load.data;
+  const { report, findings, requirements, remediation, sessionStatus, currentCycle, cycleOutcome } = load.data;
   const readOnly = sessionStatus === 'completed';
   const showRaw = raw ?? findings.length === 0; // nothing parsed: the raw text is the report
   const counts = { fail: 0, pass: 0, unknown: 0 };
@@ -186,15 +186,14 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
             <ProposeRemediation
               sessionId={sessionId}
               reportId={report.id}
-              disabledReason={
-                readOnly
-                  ? READ_ONLY_REASON
-                  : !remediation.hardeningScript
-                    ? 'Accept an adaptation (or fork a library script into this session) first'
-                    : findings.length > 0 && remediableFindings(findings).length === 0
-                      ? 'Every finding passed: nothing to remediate'
-                      : null
-              }
+              disabledReason={remediationBlockedReason({
+                sessionStatus,
+                reportCycle: report.cycleNo,
+                currentCycle,
+                outcome: cycleOutcome,
+                hasHardeningScript: !!remediation.hardeningScript,
+                findings,
+              })}
               onProposed={reload}
             />
           </div>
@@ -222,7 +221,7 @@ function ReportView({ sessionId, reportId }: { sessionId: string; reportId: stri
             {report.parseNote}
           </p>
         ) : null}
-        {remediation.hardeningScript && !readOnly ? (
+        {remediation.hardeningScript && !readOnly && report.cycleNo === currentCycle && cycleOutcome !== 'completed' ? (
           <p className="text-small text-muted">
             A remediation covers only the failing findings and is written against {remediation.hardeningScript}; it does not re-run the hardening script.
           </p>

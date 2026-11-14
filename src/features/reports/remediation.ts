@@ -21,7 +21,19 @@ import { setStepStatusTx } from '@/features/flowchart/steps';
 import { normalizeForLineEnding } from '@/features/library/versioning';
 import { unfence } from '@/features/proposals/service';
 import type { Coverage, Proposal, Requirement, StepStatus, WorkState } from '@/lib/types';
-import { planVerification, remediableFindings, remediationTitle, skippedMessages, type FindingStatus, type SkipReason } from './remediationRules';
+import {
+  AUDIT_COMPLETE_REASON,
+  NO_HARDENING_SCRIPT_REASON,
+  notCurrentCycleReason,
+  planVerification,
+  remediableFindings,
+  remediationBlockedReason,
+  remediationTitle,
+  skippedMessages,
+  type CycleOutcome,
+  type FindingStatus,
+  type SkipReason,
+} from './remediationRules';
 import { isUuid, NotFoundError, SessionReadOnlyError } from './service';
 import { latestHardeningScriptTx } from './sessionScripts';
 
@@ -49,9 +61,7 @@ export class RemediationInputError extends Error {
   readonly name = 'RemediationInputError';
 }
 
-export const NO_HARDENING_SCRIPT_MESSAGE =
-  'This session has no hardening script yet. Accept an adaptation (or fork a library script into the session) first: a remediation is written against the script already run on the machine.';
-const ALL_PASSED_MESSAGE = 'Every finding in this report passed, so there is nothing to remediate.';
+export const NO_HARDENING_SCRIPT_MESSAGE = NO_HARDENING_SCRIPT_REASON;
 
 const isReadOnlyError = (e: unknown) => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === '55000';
 
@@ -87,6 +97,13 @@ async function reportContext(tx: Tx, reportId: string): Promise<ReportContext | 
     select r.id, r.session_id, r.filename, r.cycle_no, r.parser, s.status as session_status, s.current_cycle
     from public.leads_reports r join public.sessions s on s.id = r.session_id where r.id = ${reportId}`;
   return r ?? null;
+}
+
+/** The current cycle's outcome (null: no row yet). */
+async function currentOutcome(tx: Tx, sessionId: string, cycle: number): Promise<CycleOutcome | null> {
+  const [row] = await tx<{ outcome: CycleOutcome }[]>`
+    select outcome from public.remediation_cycles where session_id = ${sessionId} and cycle_no = ${cycle}`;
+  return row?.outcome ?? null;
 }
 
 /** Locks the session row (lock order: first) and refuses a completed session. */
@@ -127,11 +144,15 @@ export type ProposeRemediationResult = {
  * session's requirements (text, coverage, state).
  *
  * In one transaction afterwards (session lock first): run_remediation Not Started → In Progress,
- * the proposal, the current cycle's remediation_cycles row upserted (report, proposal, 'open'),
- * the activity entry.
+ * earlier pending remediations of the cycle rejected, the proposal, the current cycle's
+ * remediation_cycles row upserted (report, proposal, 'open'; never over 'completed'), the activity.
  *
- * Throws NotFoundError, SessionReadOnlyError, RemediationInputError (no hardening script; every
- * finding passed), and the gateway's errors.
+ * Cycle integrity: the report must be of the session's current cycle and that cycle must not be
+ * marked complete (checked before Claude and again under the session lock); the proposal records its
+ * cycle_no and report_id, and supersedes (rejects, logged) the cycle's earlier pending remediations.
+ *
+ * Throws NotFoundError, SessionReadOnlyError, RemediationInputError (report of another cycle, audit
+ * marked complete, no hardening script, every finding passed), and the gateway's errors.
  */
 export async function proposeRemediationFor(userId: string, input: { sessionId: string; reportId: string }): Promise<ProposeRemediationResult> {
   const sessionId = String(input.sessionId);
@@ -144,10 +165,19 @@ export async function proposeRemediationFor(userId: string, input: { sessionId: 
     if (!report || report.session_id !== sessionId) throw new NotFoundError('Report');
     if (report.session_status === 'completed') throw new SessionReadOnlyError();
     const base = await latestHardeningScriptTx(tx, sessionId);
-    if (!base) throw new RemediationInputError(NO_HARDENING_SCRIPT_MESSAGE);
     const findings = await findingsInReportOrder(tx, reportId, 100_000);
     const failing = remediableFindings(findings);
-    if (findings.length > 0 && failing.length === 0) throw new RemediationInputError(ALL_PASSED_MESSAGE);
+    // Same rules as the button (remediationBlockedReason); the cycle ones are checked again under the lock.
+    const blocked = remediationBlockedReason({
+      sessionStatus: report.session_status,
+      reportCycle: report.cycle_no,
+      currentCycle: report.current_cycle,
+      outcome: await currentOutcome(tx, sessionId, report.current_cycle),
+      hasHardeningScript: !!base,
+      findings,
+    });
+    if (blocked) throw new RemediationInputError(blocked);
+    if (!base) throw new RemediationInputError(NO_HARDENING_SCRIPT_MESSAGE);
     const requirements = await tx<{ text: string; coverage: Coverage; work_state: WorkState }[]>`
       select text, coverage, work_state from public.requirements where session_id = ${sessionId}
       order by created_at, id limit ${MAX_PROMPT_REQUIREMENTS}`;
@@ -201,19 +231,39 @@ export async function proposeRemediationFor(userId: string, input: { sessionId: 
   return writing(() =>
     withUser(userId, async (tx) => {
       const session = await lockActiveSession(tx, sessionId);
+      // Under the session lock: the cycle may have moved on (or been marked complete) while Claude worked.
+      if (pre.report.cycle_no !== session.current_cycle) throw new RemediationInputError(notCurrentCycleReason(pre.report.cycle_no, session.current_cycle));
+      if ((await currentOutcome(tx, sessionId, session.current_cycle)) === 'completed') throw new RemediationInputError(AUDIT_COMPLETE_REASON);
       const [step] = await tx<{ status: StepStatus }[]>`
         select status from public.workflow_steps where session_id = ${sessionId} and step = 'run_remediation' for update`;
       if (step?.status === 'not_started') await setStepStatusTx(tx, { sessionId, step: 'run_remediation', status: 'in_progress' });
 
+      // One pending remediation per cycle: a new one supersedes (rejects) the cycle's earlier pending ones.
+      const superseded = await tx<{ id: string }[]>`
+        update public.proposals set status = 'rejected', updated_at = now()
+        where session_id = ${sessionId} and kind = 'remediation' and status = 'pending' and cycle_no = ${session.current_cycle}
+        returning id`;
       const [proposal] = await tx<Proposal[]>`
-        insert into public.proposals (session_id, kind, base_version_id, readme_id, proposed_content, summary, flags)
-        values (${sessionId}, 'remediation', ${base.version.id}, null, ${content}, ${result.data.summary}, ${tx.json(flags as never)})
+        insert into public.proposals (session_id, kind, base_version_id, readme_id, proposed_content, summary, flags, cycle_no, report_id)
+        values (${sessionId}, 'remediation', ${base.version.id}, null, ${content}, ${result.data.summary}, ${tx.json(flags as never)},
+                ${session.current_cycle}, ${reportId})
         returning *`;
+      for (const old of superseded) {
+        await logActivity(tx, {
+          action: 'proposal.supersede',
+          entityType: 'proposal',
+          entityId: old.id,
+          sessionId,
+          meta: { kind: 'remediation', cycle: session.current_cycle, supersededBy: proposal!.id },
+        });
+      }
+      // A completed cycle's row is never reopened (the check above makes this a no-op guard).
       await tx`
         insert into public.remediation_cycles (session_id, cycle_no, report_id, proposal_id, outcome)
         values (${sessionId}, ${session.current_cycle}, ${reportId}, ${proposal!.id}, 'open')
         on conflict (session_id, cycle_no) do update
-          set report_id = excluded.report_id, proposal_id = excluded.proposal_id, outcome = 'open'`;
+          set report_id = excluded.report_id, proposal_id = excluded.proposal_id, outcome = 'open'
+          where public.remediation_cycles.outcome <> 'completed'`;
       await logActivity(tx, {
         action: 'proposal.create',
         entityType: 'proposal',
@@ -223,6 +273,7 @@ export async function proposeRemediationFor(userId: string, input: { sessionId: 
           kind: 'remediation',
           reportId,
           cycle: session.current_cycle,
+          superseded: superseded.map((x) => x.id),
           baseVersionId: base.version.id,
           scriptId: base.script.id,
           findings: pre.failing.length,

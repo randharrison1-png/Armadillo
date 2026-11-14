@@ -94,6 +94,12 @@ const requestText = (i = 0) => {
 };
 const block = (text: string, type: string) => new RegExp(`<untrusted_document_[0-9a-f]{20} type="${type}"[^>]*>([\\s\\S]*?)</untrusted_document_`).exec(text)?.[1] ?? '';
 
+/** Waits until the mock has received a Claude request (the remediation's pre-checks have passed). */
+async function waitForClaude(n = 1) {
+  for (let i = 0; i < 200 && mock.requests().length < n; i++) await new Promise((r) => setTimeout(r, 10));
+  expect(mock.requests().length).toBeGreaterThanOrEqual(n);
+}
+
 async function propose(w: World, reportId: string, answer = remediationAnswer()) {
   mock.enqueue(answer);
   return remediation.proposeRemediationFor(w.userId, { sessionId: w.sessionId, reportId });
@@ -130,7 +136,9 @@ describe('remediation.test.ts', () => {
     expect(block(text, 'requirements')).toContain('"Disable the guest account" | coverage: covered | state: proposed');
     expect(text).toMatch(/only the failing/i);
 
-    expect(r.proposal).toMatchObject({ kind: 'remediation', status: 'pending', base_version_id: w.script.current_version_id, readme_id: null, session_id: w.sessionId });
+    expect(r.proposal).toMatchObject({
+      kind: 'remediation', status: 'pending', base_version_id: w.script.current_version_id, readme_id: null, session_id: w.sessionId, cycle_no: 1, report_id: report.id,
+    });
     expect(r.proposal.proposed_content).toBe(REMEDIATION.replace(/\n/g, '\r\n'));
     expect(r.title).toBe('Remediation — Cycle 1');
     // Scanner flags are stored even when Claude gave none.
@@ -250,6 +258,71 @@ describe('proposeRemediation', () => {
     const data = await flowchart.getFlowchartDataFor(w.userId, w.sessionId);
     expect(data!.latestSessionScript).toEqual({ scriptId: w.script.id, filename: 'harden.ps1' });
     expect(data!.latestRemediation).toMatchObject({ proposalId: second.proposal.id, status: 'pending', title: 'Remediation — Cycle 1' });
+  });
+});
+
+describe('remediation cycle integrity', () => {
+  it('a new proposal supersedes the pending one; after "Start another cycle" the old proposal cannot be accepted', async () => {
+    const w = await world();
+    const report = await addReport(w);
+    const p1 = await propose(w, report.id);
+    const p2 = await propose(w, report.id);
+    expect((await sql`select status from public.proposals where id = ${p1.proposal.id}`)[0]!.status).toBe('rejected');
+    expect(await sql`select meta from public.activity_log where entity_id = ${p1.proposal.id} and action = 'proposal.supersede'`).toEqual([
+      { meta: expect.objectContaining({ kind: 'remediation', cycle: 1, supersededBy: p2.proposal.id }) },
+    ]);
+    await expect(proposals.acceptProposalFor(w.userId, { proposalId: p1.proposal.id, acknowledgedFlagIds: p1.proposal.flags.map((f: HighImpactFlag) => f.id) })).rejects.toBeInstanceOf(
+      proposals.ProposalStateError,
+    );
+
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'continue' });
+    const rowsBefore = await sql`select cycle_no, report_id, proposal_id, outcome, updated_at from public.remediation_cycles where session_id = ${w.sessionId} order by cycle_no`;
+    const err = await proposals
+      .acceptProposalFor(w.userId, { proposalId: p2.proposal.id, acknowledgedFlagIds: p2.proposal.flags.map((f: HighImpactFlag) => f.id) })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(proposals.StaleRemediationError);
+    expect((err as Error).message).toBe('This remediation was proposed for cycle 1 — propose again from the current report');
+    // Nothing written: no script, the proposal stays pending, cycle 1's row as it was, no cycle 2 row.
+    expect(await sql`select 1 from public.scripts where session_id = ${w.sessionId} and name like 'Remediation%'`).toHaveLength(0);
+    expect((await sql`select status from public.proposals where id = ${p2.proposal.id}`)[0]!.status).toBe('pending');
+    expect(await sql`select cycle_no, report_id, proposal_id, outcome, updated_at from public.remediation_cycles where session_id = ${w.sessionId} order by cycle_no`).toEqual(rowsBefore);
+    expect(rowsBefore).toEqual([expect.objectContaining({ cycle_no: 1, proposal_id: p2.proposal.id, outcome: 'continued' })]);
+    // The view still names the proposal after its own cycle and report.
+    const view = await proposals.getProposalViewFor(w.userId, p2.proposal.id);
+    expect(view!.remediation).toEqual({ cycleNo: 1, title: 'Remediation — Cycle 1', reportId: report.id, reportFilename: 'leads.txt' });
+  });
+
+  it('refuses a remediation from an earlier cycle’s report, before Claude and without touching any cycle row', async () => {
+    const w = await world();
+    const old = await addReport(w);
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'continue' });
+    const rowsBefore = await sql`select * from public.remediation_cycles where session_id = ${w.sessionId} order by cycle_no`;
+    await expect(remediation.proposeRemediationFor(w.userId, { sessionId: w.sessionId, reportId: old.id })).rejects.toThrow(
+      'This report is from cycle 1. Propose a remediation from a report of the current cycle (2).',
+    );
+    expect(mock.requests()).toHaveLength(0);
+    expect(await sql`select * from public.remediation_cycles where session_id = ${w.sessionId} order by cycle_no`).toEqual(rowsBefore);
+    expect(await sql`select 1 from public.proposals where session_id = ${w.sessionId}`).toHaveLength(0);
+    // A report of cycle 2 works and is recorded under cycle 2.
+    const current = await addReport(w, FAILING_REPORT, 'cycle2.txt');
+    const r = await propose(w, current.id);
+    expect(r).toMatchObject({ cycleNo: 2, title: 'Remediation — Cycle 2' });
+    expect(r.proposal).toMatchObject({ cycle_no: 2, report_id: current.id });
+  });
+
+  it('a cycle that advances while Claude writes refuses the remediation under the session lock', async () => {
+    const w = await world();
+    const report = await addReport(w);
+    mock.enqueue({ ...remediationAnswer(), initialDelayMs: 400 });
+    const pending = remediation.proposeRemediationFor(w.userId, { sessionId: w.sessionId, reportId: report.id });
+    await waitForClaude();
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'continue' });
+    await expect(pending).rejects.toThrow('This report is from cycle 1. Propose a remediation from a report of the current cycle (2).');
+    expect(await sql`select 1 from public.proposals where session_id = ${w.sessionId}`).toHaveLength(0);
+    expect(await sql`select cycle_no, outcome, proposal_id from public.remediation_cycles where session_id = ${w.sessionId}`).toEqual([
+      { cycle_no: 1, outcome: 'continued', proposal_id: null },
+    ]);
+    expect(await stepStatus(w.sessionId, 'run_remediation')).toBe('not_started');
   });
 });
 
@@ -454,9 +527,50 @@ describe('decideCycle', () => {
     expect(await sql`select cycle_no, outcome from public.remediation_cycles where session_id = ${w.sessionId}`).toEqual([{ cycle_no: 1, outcome: 'completed' }]);
     expect(await stepStatus(w.sessionId, 'submit_final')).toBe('in_progress');
     expect((await sql`select current_cycle from public.sessions where id = ${w.sessionId}`)[0]!.current_cycle).toBe(1);
-    await expect(cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'complete' })).rejects.toThrow('Cycle 1 is already marked complete');
+    await expect(cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'complete' })).rejects.toThrow('This audit is marked complete');
     const data = await flowchart.getFlowchartDataFor(w.userId, w.sessionId);
-    expect(data!.decision.complete).toEqual({ enabled: false, reason: 'Cycle 1 is already marked complete' });
+    expect(data!.decision).toEqual({
+      complete: { enabled: false, reason: 'This audit is marked complete' },
+      continue: { enabled: false, reason: 'This audit is marked complete' },
+    });
+  });
+
+  it('Mark complete is final: Start another cycle and new remediations are refused; the outcome stays completed', async () => {
+    const w = await world();
+    const report = await addReport(w);
+    await sql`insert into public.evidence (owner_id, session_id, step, kind, note) values (${w.userId}, ${w.sessionId}, 'check_points', 'verification', '100 points')`;
+    await flowchart.changeStepStatusFor(w.userId, { sessionId: w.sessionId, step: 'check_points', status: 'verified' });
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'complete' });
+    const eventsBefore = await sql`select id from public.workflow_step_events where session_id = ${w.sessionId}`;
+
+    await expect(cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'continue' })).rejects.toThrow('This audit is marked complete');
+    await expect(remediation.proposeRemediationFor(w.userId, { sessionId: w.sessionId, reportId: report.id })).rejects.toThrow('This audit is marked complete');
+    expect(mock.requests()).toHaveLength(0);
+    expect(await sql`select cycle_no, outcome from public.remediation_cycles where session_id = ${w.sessionId}`).toEqual([{ cycle_no: 1, outcome: 'completed' }]);
+    expect((await sql`select current_cycle from public.sessions where id = ${w.sessionId}`)[0]!.current_cycle).toBe(1);
+    expect(await stepStatus(w.sessionId, 'submit_final')).toBe('in_progress');
+    expect(await stepStatus(w.sessionId, 'run_leads')).toBe('in_progress');
+    expect(await sql`select id from public.workflow_step_events where session_id = ${w.sessionId}`).toHaveLength(eventsBefore.length);
+    // submit_final moved only through the complete path (one event, cycle 1).
+    expect(await sql`select from_status, to_status, cycle_no from public.workflow_step_events where session_id = ${w.sessionId} and step = 'submit_final'`).toEqual([
+      { from_status: 'not_started', to_status: 'in_progress', cycle_no: 1 },
+    ]);
+    const detail = await getReportDetailFor(w.userId, w.sessionId, report.id);
+    expect(detail).toMatchObject({ currentCycle: 1, cycleOutcome: 'completed' });
+  });
+
+  it('a cycle marked complete while Claude writes a remediation refuses it under the session lock', async () => {
+    const w = await world();
+    const report = await addReport(w);
+    await sql`insert into public.evidence (owner_id, session_id, step, kind, note) values (${w.userId}, ${w.sessionId}, 'check_points', 'verification', '100 points')`;
+    await flowchart.changeStepStatusFor(w.userId, { sessionId: w.sessionId, step: 'check_points', status: 'verified' });
+    mock.enqueue({ ...remediationAnswer(), initialDelayMs: 400 });
+    const pending = remediation.proposeRemediationFor(w.userId, { sessionId: w.sessionId, reportId: report.id });
+    await waitForClaude();
+    await cycles.decideCycleFor(w.userId, { sessionId: w.sessionId, decision: 'complete' });
+    await expect(pending).rejects.toThrow('This audit is marked complete');
+    expect(await sql`select 1 from public.proposals where session_id = ${w.sessionId}`).toHaveLength(0);
+    expect(await sql`select outcome from public.remediation_cycles where session_id = ${w.sessionId}`).toEqual([{ outcome: 'completed' }]);
   });
 
   it('Start another cycle needs a LEADS report in the current cycle', async () => {
@@ -509,9 +623,11 @@ describe('decideCycle', () => {
     for (const r of results) {
       if (r.status === 'rejected') {
         expect((r.reason as { code?: string }).code).not.toBe('40P01');
-        expect(String(r.reason)).toMatch(/Upload a LEADS report for cycle/);
+        // Whichever order the session lock gives: a second continue needs a new report; after a continue,
+        // the cycle-1 report and proposal belong to an earlier cycle; a newer proposal supersedes the old one.
+        expect(String(r.reason)).toMatch(/Upload a LEADS report for cycle|This report is from cycle 1|proposed for cycle 1|already rejected/);
       }
     }
-    expect(results.filter((r) => r.status === 'fulfilled').length).toBeGreaterThanOrEqual(6);
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBeGreaterThanOrEqual(4);
   });
 });

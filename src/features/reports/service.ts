@@ -6,7 +6,7 @@ import { extensionOf, FileTooLargeError, limitFor, UnsupportedFileTypeError, ALL
 import { setStepStatusTx } from '@/features/flowchart/steps';
 import type { LeadsReport, StepStatus } from '@/lib/types';
 import { parseLeadsReport, type Finding } from './parsers';
-import { remediationTitle } from './remediationRules';
+import { remediationTitle, type CycleOutcome } from './remediationRules';
 import { latestHardeningScriptTx } from './sessionScripts';
 import { reportTextFromBytes, stripNul } from './text';
 
@@ -212,10 +212,13 @@ export type ReportDetail = {
   findings: ReportFinding[];
   /** The session's requirements (matrix order), for mapping findings. */
   requirements: ReportRequirement[];
+  /** The session's current audit cycle and its outcome (a remediation needs a report of this cycle, not marked complete). */
+  currentCycle: number;
+  cycleOutcome: CycleOutcome | null;
   remediation: {
     /** e.g. "Session hardening · v2": what a remediation would be written against; null when the session has none. */
     hardeningScript: string | null;
-    /** The remediation proposal recorded for this report's cycle row, if any. */
+    /** The newest remediation proposal made from this report, if any. */
     proposal: { id: string; status: 'pending' | 'accepted' | 'rejected'; title: string } | null;
   };
 };
@@ -224,7 +227,8 @@ export type ReportDetail = {
 export function getReportDetailFor(userId: string, sessionId: string, reportId: string): Promise<ReportDetail | null> {
   if (!isUuid(sessionId) || !isUuid(reportId)) return Promise.resolve(null);
   return withUser(userId, async (tx) => {
-    const [session] = await tx<{ status: 'active' | 'completed' }[]>`select status from public.sessions where id = ${sessionId}`;
+    const [session] = await tx<{ status: 'active' | 'completed'; current_cycle: number }[]>`
+      select status, current_cycle from public.sessions where id = ${sessionId}`;
     if (!session) return null;
     const [r] = await tx<Row[]>`
       select id, filename, cycle_no, created_at, parser, score, parsed from public.leads_reports
@@ -239,12 +243,14 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
       select id, text, work_state from public.requirements where session_id = ${sessionId} order by created_at, id limit 1000`;
     const hardening = await latestHardeningScriptTx(tx, sessionId);
     const [proposal] = await tx<{ id: string; status: 'pending' | 'accepted' | 'rejected'; cycle_no: number; name: string | null }[]>`
-      select p.id, p.status, rc.cycle_no, s.name
-      from public.remediation_cycles rc join public.proposals p on p.id = rc.proposal_id
+      select p.id, p.status, p.cycle_no, s.name
+      from public.proposals p
       left join public.script_versions v on v.id = p.result_version_id
       left join public.scripts s on s.id = v.script_id
-      where rc.session_id = ${sessionId} and rc.report_id = ${reportId}
-      order by rc.cycle_no desc limit 1`;
+      where p.session_id = ${sessionId} and p.kind = 'remediation' and p.report_id = ${reportId}
+      order by p.created_at desc, p.id desc limit 1`;
+    const [cycleRow] = await tx<{ outcome: CycleOutcome }[]>`
+      select outcome from public.remediation_cycles where session_id = ${sessionId} and cycle_no = ${session.current_cycle}`;
     return {
       sessionStatus: session.status,
       report: {
@@ -271,6 +277,8 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
         suggestedRequirementId: f.suggested_requirement_id,
       })),
       requirements: requirements.map((q) => ({ id: q.id, text: q.text, workState: q.work_state })),
+      currentCycle: session.current_cycle,
+      cycleOutcome: cycleRow?.outcome ?? null,
       remediation: {
         hardeningScript: hardening ? `${hardening.script.name} · v${hardening.version.version_no}` : null,
         proposal: proposal ? { id: proposal.id, status: proposal.status, title: proposal.name ?? remediationTitle(proposal.cycle_no) } : null,

@@ -49,3 +49,24 @@ create trigger leads_findings_requirement_same_session
   for each row execute function public.assert_finding_requirement_same_session();
 
 revoke execute on function public.assert_finding_requirement_same_session() from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------------------------------------
+-- Remediation proposals know their audit cycle and report (Task 17 review).
+--
+-- cycle_no   the session's current_cycle when the remediation was proposed. Accepting is refused once
+--            the session has moved to another cycle, and the script is named after this cycle.
+-- report_id  the LEADS report (same session, which must be of cycle_no) the remediation answers.
+-- Both null for adaptations. NO ACTION: the report behind a proposal cannot vanish (reports go only
+-- with their session, which cascades).
+-- ---------------------------------------------------------------------------------------------------
+alter table public.proposals
+  add column cycle_no integer check (cycle_no is null or cycle_no >= 1),
+  add column report_id uuid;
+
+alter table public.proposals
+  add constraint proposals_report_fkey foreign key (report_id, session_id)
+    references public.leads_reports (id, session_id),
+  add constraint proposals_cycle_only_for_remediation check (kind = 'remediation' or (cycle_no is null and report_id is null));
+
+create index proposals_report_idx on public.proposals (report_id);
+create index proposals_session_cycle_idx on public.proposals (session_id, cycle_no) where kind = 'remediation';

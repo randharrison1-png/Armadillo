@@ -212,6 +212,14 @@ test('failing report → targeted remediation → accept as a new script → con
   await expect(inspector(page).getByRole('region', { name: 'Audit cycles' })).toContainText('Cycle 1 · Continued to the next cycle · report fail.txt');
   await expect(inspector(page).getByRole('button', { name: 'Start another cycle' })).toBeDisabled();
 
+  // A cycle-1 report can no longer start a remediation: it would belong to cycle 1.
+  await page.getByRole('tab', { name: 'Report · pass.txt' }).click();
+  const proposeOld = panel(page).getByRole('button', { name: 'Propose remediation' });
+  await expect(proposeOld).toBeDisabled();
+  await proposeOld.locator('xpath=..').hover();
+  await expect(page.getByRole('tooltip').first()).toContainText('This report is from cycle 1. Propose a remediation from a report of the current cycle (2).');
+  await openFlowchart(page);
+
   // The history is kept: Run LEADS lists its cycle 1 start and the cycle 2 reset.
   await node(page, 'Run LEADS').click();
   const history = inspector(page).getByRole('list', { name: 'Run LEADS history' });

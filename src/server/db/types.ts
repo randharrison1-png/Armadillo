@@ -150,6 +150,9 @@ export type Proposal = Mutable & {
   result_version_id: string | null;
   /** The README an adaptation was written for (0004c); null for remediation proposals. */
   readme_id: string | null;
+  /** Remediation only (0004d): the audit cycle it was proposed in, and the LEADS report it answers. */
+  cycle_no: number | null;
+  report_id: string | null;
 };
 
 export type LeadsReport = Mutable & {

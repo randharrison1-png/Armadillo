@@ -111,12 +111,14 @@ export type Availability = { enabled: true } | { enabled: false; reason: string 
 export type DecisionAvailability = { complete: Availability; continue: Availability };
 
 export const READ_ONLY_REASON = 'This session is completed and read-only';
+/** "Mark complete" is final for its cycle: no other cycle and no new remediation after it. */
+export const AUDIT_COMPLETE_REASON = 'This audit is marked complete';
 
 /**
  * Enable rules for "Mark complete" and "Start another cycle" (the same function gates the buttons and
  * the server action). Mark complete: the current cycle's "Check final points" is Complete and
- * Verified and the cycle is not already complete. Start another cycle: the current cycle has at least
- * one LEADS report. Neither on a completed session.
+ * Verified. Start another cycle: the current cycle has at least one LEADS report. Mark complete is
+ * final: once the cycle is complete, neither is available. Neither on a completed session.
  */
 export function decisionAvailability(s: {
   sessionStatus: 'active' | 'completed';
@@ -129,10 +131,12 @@ export function decisionAvailability(s: {
     const off = { enabled: false as const, reason: READ_ONLY_REASON };
     return { complete: off, continue: off };
   }
+  if (s.outcome === 'completed') {
+    const off = { enabled: false as const, reason: AUDIT_COMPLETE_REASON };
+    return { complete: off, continue: off };
+  }
   const complete: Availability =
-    s.outcome === 'completed'
-      ? { enabled: false, reason: `Cycle ${s.currentCycle} is already marked complete` }
-      : s.checkPoints !== 'verified'
+    s.checkPoints !== 'verified'
         ? { enabled: false, reason: 'Mark “Check final points” Complete and Verified first' }
         : { enabled: true };
   const next: Availability = s.currentCycleReports > 0 ? { enabled: true } : { enabled: false, reason: `Upload a LEADS report for cycle ${s.currentCycle} first` };
@@ -141,3 +145,38 @@ export function decisionAvailability(s: {
 
 /** The steps "Start another cycle" resets to Not Started (spec 8.3: the return loop to the LEADS audit). */
 export const CYCLE_RESET_STEPS = ['run_leads', 'inspect_leads', 'run_remediation', 'check_points'] as const;
+
+// ------------------------------------------------------------------------------------------------
+// Proposing a remediation
+// ------------------------------------------------------------------------------------------------
+
+export const NO_HARDENING_SCRIPT_REASON =
+  'This session has no hardening script yet: accept an adaptation (or fork a library script into the session) first. A remediation is written against the script already run on the machine.';
+export const ALL_PASSED_REASON = 'Every finding in this report passed, so there is nothing to remediate.';
+export const notCurrentCycleReason = (reportCycle: number, currentCycle: number) =>
+  `This report is from cycle ${reportCycle}. Propose a remediation from a report of the current cycle (${currentCycle}).`;
+
+/**
+ * Why "Propose remediation" is unavailable for a report, or null. The server applies the same rules
+ * (the cycle ones again under the session lock). A remediation belongs to the cycle of its report,
+ * which must be the session's current cycle, and not to an audit already marked complete.
+ */
+export function remediationBlockedReason(s: {
+  sessionStatus: 'active' | 'completed';
+  reportCycle: number;
+  currentCycle: number;
+  outcome: CycleOutcome | null;
+  hasHardeningScript: boolean;
+  findings: readonly { status: FindingStatus }[];
+}): string | null {
+  if (s.sessionStatus === 'completed') return READ_ONLY_REASON;
+  if (s.outcome === 'completed') return AUDIT_COMPLETE_REASON;
+  if (s.reportCycle !== s.currentCycle) return notCurrentCycleReason(s.reportCycle, s.currentCycle);
+  if (!s.hasHardeningScript) return NO_HARDENING_SCRIPT_REASON;
+  if (s.findings.length > 0 && remediableFindings(s.findings).length === 0) return ALL_PASSED_REASON;
+  return null;
+}
+
+/** Accepting a remediation proposed in another cycle than the session's current one is refused. */
+export const staleRemediationReason = (proposalCycle: number | null) =>
+  `This remediation was proposed for cycle ${proposalCycle ?? '?'} — propose again from the current report`;

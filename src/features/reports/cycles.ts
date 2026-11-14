@@ -17,7 +17,8 @@ import { isUuid } from './service';
  *    Inspect LEADS report, Targeted remediation and Check final points to Not Started through
  *    setStepStatusTx, so every reset is a workflow_step_events row of the NEW cycle; earlier events,
  *    reports, proposals and scripts are kept (the history).
- * The enable rules are decisionAvailability, the same function the buttons use.
+ * The enable rules are decisionAvailability, the same function the buttons use. "Mark complete" is
+ * final for its cycle: afterwards neither decision is allowed, and no upsert overwrites 'completed'.
  *
  * Lock order (app-wide): the sessions row FOR UPDATE (current_cycle changes), THEN the workflow_steps
  * rows, THEN remediation_cycles. Concurrent decisions serialize on the session row; the loser re-reads
@@ -77,7 +78,8 @@ export async function decideCycleFor(userId: string, input: { sessionId: string;
                 (select id from public.leads_reports where session_id = ${sessionId} and cycle_no = ${cycle} order by created_at desc, id desc limit 1),
                 ${outcome})
         on conflict (session_id, cycle_no) do update
-          set outcome = excluded.outcome, report_id = coalesce(public.remediation_cycles.report_id, excluded.report_id)`;
+          set outcome = excluded.outcome, report_id = coalesce(public.remediation_cycles.report_id, excluded.report_id)
+          where public.remediation_cycles.outcome <> 'completed'`;
       await logActivity(tx, {
         action: decision === 'complete' ? 'cycle.complete' : 'cycle.continue',
         entityType: 'session',
