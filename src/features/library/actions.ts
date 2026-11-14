@@ -3,7 +3,6 @@
 import { revalidatePath } from 'next/cache';
 import { ZodError } from 'zod';
 import { requireUser } from '@/server/auth';
-import { decodeText } from '@/server/files/encoding';
 import {
   createUploadTarget,
   FileTooLargeError,
@@ -14,7 +13,7 @@ import {
 } from '@/server/files/storage';
 import type { Script } from '@/lib/types';
 import { createScriptSchema, type CreateScriptInput, type ScriptMeta } from './schema';
-import { createScriptFor, duplicateScriptFor, getScriptWithContentFor } from './service';
+import { createScriptFor, createScriptFromUploadFor, duplicateScriptFor, getScriptWithContentFor } from './service';
 
 export type FieldErrors = Partial<
   Record<'name' | 'filename' | 'category' | 'fn' | 'description' | 'osCompat' | 'content' | 'file' | 'form', string>
@@ -47,7 +46,9 @@ function toErrors(e: unknown, fallback: string): FieldErrors {
 /** Creates a universal library script at version 1. Throws on invalid input. */
 export async function createScript(input: CreateScriptInput): Promise<Script> {
   const user = await requireUser();
-  const script = await createScriptFor(user.id, input);
+  // Parse first: unknown keys (e.g. a client-supplied `format`) are stripped, so in-app scripts always
+  // get the per-extension format and normalized newlines.
+  const script = await createScriptFor(user.id, createScriptSchema.parse(input));
   revalidate();
   return script;
 }
@@ -85,12 +86,7 @@ export async function recordUploadedScript(input: ScriptMeta & { storagePath: st
     const { storagePath, ...rest } = input;
     const meta = createScriptSchema.omit({ content: true }).parse(rest);
     await verifyStoredUpload(storagePath, 'script');
-    const decoded = decodeText(await readPrivate(storagePath));
-    const script = await createScriptFor(
-      user.id,
-      { ...meta, content: decoded.text, format: { encoding: decoded.encoding, lineEnding: decoded.lineEnding } },
-      { action: 'script.upload', meta: { storagePath, ...(decoded.fallback ? { decodedAs: decoded.fallback } : {}) } },
-    );
+    const script = await createScriptFromUploadFor(user.id, meta, await readPrivate(storagePath), { storagePath });
     revalidate();
     return { ok: true, scriptId: script.id, name: script.name };
   } catch (e) {

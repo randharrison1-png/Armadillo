@@ -56,3 +56,16 @@ export function nameFromFilename(filename: string): string {
   const i = base.lastIndexOf('.');
   return i > 0 ? base.slice(0, i) : base;
 }
+
+export const ENCODING_LABEL: Record<TextEncoding, string> = {
+  'utf-8': 'UTF-8',
+  'utf-8-bom': 'UTF-8 with BOM',
+  'utf-16le': 'UTF-16 LE',
+  'utf-16be': 'UTF-16 BE',
+};
+
+export const LINE_ENDING_LABEL: Record<TextFormat['lineEnding'], string> = { crlf: 'CRLF', lf: 'LF', mixed: 'Mixed line endings' };
+
+/** "UTF-16 LE · CRLF": how a version is written to disk on download. */
+export const formatLabel = (v: { encoding: TextEncoding; line_ending: TextFormat['lineEnding'] }) =>
+  `${ENCODING_LABEL[v.encoding]} · ${LINE_ENDING_LABEL[v.line_ending]}`;

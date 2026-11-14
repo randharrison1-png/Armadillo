@@ -30,3 +30,7 @@ export const createScriptSchema = z.object({
 
 export type CreateScriptInput = z.input<typeof createScriptSchema>;
 export type ScriptMeta = Omit<CreateScriptInput, 'content'>;
+
+/** Editable script details (spec §6.2). Filename and function are fixed once created. */
+export const updateScriptSchema = createScriptSchema.pick({ name: true, category: true, description: true, osCompat: true });
+export type UpdateScriptInput = z.input<typeof updateScriptSchema>;

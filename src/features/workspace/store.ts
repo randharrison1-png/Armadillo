@@ -9,7 +9,26 @@ const KINDS: readonly TabKind[] = ['claude', 'readme', 'script', 'diff', 'flowch
 
 const CLAUDE_TAB: TabDescriptor = { key: 'claude', kind: 'claude', title: 'Claude' };
 const FLOWCHART_TAB: TabDescriptor = { key: 'flowchart', kind: 'flowchart', title: 'Flowchart' };
-const defaultTabs = (): TabDescriptor[] => [{ ...CLAUDE_TAB }, { ...FLOWCHART_TAB }];
+
+/**
+ * What a workspace starts with. `pinned` is the one tab that can never close (and is restored if a
+ * persisted list lost it); it must be one of `defaults()`.
+ */
+export type WorkspaceConfig = { defaults: () => TabDescriptor[]; pinned: string };
+
+/** Session workspaces (the default): Claude (pinned) + Flowchart. */
+export const SESSION_WORKSPACE: WorkspaceConfig = {
+  defaults: () => [{ ...CLAUDE_TAB }, { ...FLOWCHART_TAB }],
+  pinned: PINNED_TAB_KEY,
+};
+
+/**
+ * The tab strip on /app/library/[scriptId] (outside any session): namespace `library:<scriptId>`,
+ * starting with (and pinning) that script's editor tab instead of Claude/Flowchart.
+ */
+export function libraryWorkspace(editorTab: TabDescriptor): WorkspaceConfig & { namespace: string } {
+  return { namespace: `library:${editorTab.resourceId ?? editorTab.key}`, defaults: () => [{ ...editorTab }], pinned: editorTab.key };
+}
 
 export type WorkspaceState = {
   tabs: TabDescriptor[];
@@ -21,7 +40,8 @@ export type WorkspaceState = {
   hydrate: () => void;
 };
 
-const storageKey = (sessionId: string) => `armadillo.tabs.${sessionId}`;
+/** Session workspaces use the session id as namespace, so their key stays `armadillo.tabs.{sessionId}`. */
+const storageKey = (namespace: string) => `armadillo.tabs.${namespace}`;
 
 function isTab(v: unknown): v is TabDescriptor {
   if (typeof v !== 'object' || v === null) return false;
@@ -36,10 +56,10 @@ function isTab(v: unknown): v is TabDescriptor {
   );
 }
 
-function read(sessionId: string): { tabs: TabDescriptor[]; activeKey: string } {
-  const fallback = { tabs: defaultTabs(), activeKey: PINNED_TAB_KEY };
+function read(namespace: string, config: WorkspaceConfig): { tabs: TabDescriptor[]; activeKey: string } {
+  const fallback = { tabs: config.defaults(), activeKey: config.pinned };
   try {
-    const raw = window.localStorage.getItem(storageKey(sessionId));
+    const raw = window.localStorage.getItem(storageKey(namespace));
     if (!raw) return fallback;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return fallback;
@@ -47,23 +67,26 @@ function read(sessionId: string): { tabs: TabDescriptor[]; activeKey: string } {
     if (!Array.isArray(tabs) || tabs.length === 0 || !tabs.every(isTab)) return fallback;
     const seen = new Set<string>();
     const unique = tabs.filter((t) => !seen.has(t.key) && (seen.add(t.key), true));
-    if (!seen.has(PINNED_TAB_KEY)) unique.unshift({ ...CLAUDE_TAB });
-    const active = typeof activeKey === 'string' && seen.has(activeKey) ? activeKey : PINNED_TAB_KEY;
+    if (!seen.has(config.pinned)) {
+      const pinned = config.defaults().find((t) => t.key === config.pinned);
+      if (pinned) unique.unshift(pinned);
+    }
+    const active = typeof activeKey === 'string' && seen.has(activeKey) ? activeKey : config.pinned;
     return { tabs: unique, activeKey: active };
   } catch {
     return fallback;
   }
 }
 
-function write(sessionId: string, s: Pick<WorkspaceState, 'tabs' | 'activeKey'>) {
+function write(namespace: string, s: Pick<WorkspaceState, 'tabs' | 'activeKey'>) {
   try {
-    window.localStorage.setItem(storageKey(sessionId), JSON.stringify({ tabs: s.tabs, activeKey: s.activeKey }));
+    window.localStorage.setItem(storageKey(namespace), JSON.stringify({ tabs: s.tabs, activeKey: s.activeKey }));
   } catch {
     // Storage unavailable or full: tabs still work for this page view.
   }
 }
 
-function createWorkspaceStore(sessionId: string): StoreApi<WorkspaceState> {
+function createWorkspaceStore(namespace: string, config: WorkspaceConfig): StoreApi<WorkspaceState> {
   let hydrated = false;
   return createStore<WorkspaceState>((set, get) => {
     const ensure = () => {
@@ -71,14 +94,15 @@ function createWorkspaceStore(sessionId: string): StoreApi<WorkspaceState> {
     };
     const commit = (next: Pick<WorkspaceState, 'tabs' | 'activeKey'>) => {
       set(next);
-      if (typeof window !== 'undefined') write(sessionId, next);
+      if (typeof window !== 'undefined') write(namespace, next);
     };
     return {
-      ...{ tabs: defaultTabs(), activeKey: PINNED_TAB_KEY },
+      tabs: config.defaults(),
+      activeKey: config.pinned,
       hydrate: () => {
         if (hydrated || typeof window === 'undefined') return;
         hydrated = true;
-        set(read(sessionId));
+        set(read(namespace, config));
       },
       openTab: (desc) => {
         ensure();
@@ -87,7 +111,7 @@ function createWorkspaceStore(sessionId: string): StoreApi<WorkspaceState> {
       },
       closeTab: (key) => {
         ensure();
-        if (key === PINNED_TAB_KEY) return;
+        if (key === config.pinned) return;
         const { tabs, activeKey } = get();
         const i = tabs.findIndex((t) => t.key === key);
         if (i < 0) return;
@@ -107,11 +131,15 @@ function createWorkspaceStore(sessionId: string): StoreApi<WorkspaceState> {
 
 const stores = new Map<string, StoreApi<WorkspaceState>>();
 
-export function getWorkspaceStore(sessionId: string): StoreApi<WorkspaceState> {
-  let s = stores.get(sessionId);
+/**
+ * The tab store for a namespace (a session id, or `library:<scriptId>`). `config` only applies
+ * when the store is first created; later calls return the same store.
+ */
+export function getWorkspaceStore(namespace: string, config: WorkspaceConfig = SESSION_WORKSPACE): StoreApi<WorkspaceState> {
+  let s = stores.get(namespace);
   if (!s) {
-    s = createWorkspaceStore(sessionId);
-    stores.set(sessionId, s);
+    s = createWorkspaceStore(namespace, config);
+    stores.set(namespace, s);
   }
   return s;
 }
@@ -121,9 +149,9 @@ export function resetWorkspaceStores() {
   stores.clear();
 }
 
-/** Per-session tab state. Hydrates from localStorage after mount to avoid SSR mismatches. */
-export function useWorkspace(sessionId: string): WorkspaceState {
-  const store = getWorkspaceStore(sessionId);
+/** Per-namespace tab state. Hydrates from localStorage after mount to avoid SSR mismatches. */
+export function useWorkspace(namespace: string, config?: WorkspaceConfig): WorkspaceState {
+  const store = getWorkspaceStore(namespace, config);
   const state = useStore(store);
   useEffect(() => {
     store.getState().hydrate();

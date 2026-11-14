@@ -2,9 +2,10 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { logActivity } from '@/server/activity';
 import { withUser, type Tx } from '@/server/db/withUser';
-import type { Script, ScriptCategory, ScriptVersion } from '@/lib/types';
+import { decodeText } from '@/server/files/encoding';
+import type { Script, ScriptCategory, ScriptLanguage, ScriptVersion } from '@/lib/types';
 import type { LibraryQuery } from './filters';
-import { createScriptSchema, NAME_MAX, type CreateScriptInput } from './schema';
+import { createScriptSchema, NAME_MAX, type CreateScriptInput, type ScriptMeta } from './schema';
 import { defaultFormat, languageFor, type TextFormat } from './scriptMeta';
 
 /** A script row plus the number of its current version (for "v3" in the table). */
@@ -12,7 +13,8 @@ export type ScriptListItem = Script & { current_version_no: number | null };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+/** sha256 of a stored version: SHA-256 over the UTF-8 encoding of its content string (not the file bytes). */
+export const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const eol = { crlf: '\r\n', lf: '\n', mixed: '\n' } as const;
 
 /** Escapes LIKE wildcards so user text is matched literally (backslash is ILIKE's default escape). */
@@ -95,21 +97,27 @@ type NewScript = {
   baseVersionId?: string | null;
   changeNote?: string | null;
   sha256?: string;
+  /** Defaults to languageFor(filename). */
+  language?: ScriptLanguage;
+  /** Session-scoped script (null/undefined ⇒ universal). */
+  sessionId?: string | null;
+  forkedFromVersionId?: string | null;
   activity: { action: string; meta?: Record<string, unknown> };
 };
 
 /** Script row + version 1 + current_version_id + activity entry, inside the caller's transaction. */
-async function insertScriptWithV1(tx: Tx, n: NewScript): Promise<Script> {
+export async function insertScriptWithV1(tx: Tx, n: NewScript): Promise<Script> {
   const [row] = await tx<Script[]>`
-    insert into public.scripts (name, filename, category, function, description, os_compat)
+    insert into public.scripts (name, filename, category, function, description, os_compat, session_id, forked_from_version_id)
     values (${n.name}, ${n.filename}, ${n.category}::public.script_category, ${n.fn}::public.script_function,
-            ${n.description ?? null}, ${n.osCompat as string[]}::public.os_type[])
+            ${n.description ?? null}, ${n.osCompat as string[]}::public.os_type[], ${n.sessionId ?? null},
+            ${n.forkedFromVersionId ?? null})
     returning *`;
   const [version] = await tx<{ id: string }[]>`
     insert into public.script_versions
       (script_id, version_no, content, encoding, line_ending, language, sha256, author, change_note, base_version_id)
     values (${row!.id}, 1, ${n.content}, ${n.format.encoding}::public.text_encoding, ${n.format.lineEnding},
-            ${languageFor(n.filename)}::public.script_language, ${n.sha256 ?? sha256Hex(n.content)}, 'user',
+            ${n.language ?? languageFor(n.filename)}::public.script_language, ${n.sha256 ?? sha256Hex(n.content)}, 'user',
             ${n.changeNote ?? null}, ${n.baseVersionId ?? null})
     returning id`;
   const [script] = await tx<Script[]>`
@@ -118,6 +126,7 @@ async function insertScriptWithV1(tx: Tx, n: NewScript): Promise<Script> {
     action: n.activity.action,
     entityType: 'script',
     entityId: script!.id,
+    ...(n.sessionId ? { sessionId: n.sessionId } : {}),
     meta: { name: script!.name, filename: script!.filename, versionId: version!.id, ...n.activity.meta },
   });
   return script!;
@@ -139,6 +148,26 @@ export async function createScriptFor(
   const content = given ? data.content : data.content.replace(/\r\n|\r|\n/g, eol[format.lineEnding]);
   return withUser(userId, (tx) =>
     insertScriptWithV1(tx, { ...data, content, format, changeNote: given ? 'Uploaded' : 'Created', activity }),
+  );
+}
+
+/**
+ * The upload path after the bytes are read back from storage: decode (encoding + line ending
+ * detected from the bytes, BOM removed), then store the decoded text verbatim as v1. Download
+ * (encodeForDownload) re-applies exactly that encoding, so the file round-trips byte for byte —
+ * except windows-1252 fallbacks, which are stored and re-encoded as UTF-8 (see DecodedText.fallback).
+ */
+export function createScriptFromUploadFor(
+  userId: string,
+  meta: ScriptMeta,
+  bytes: Uint8Array,
+  activityMeta: Record<string, unknown> = {},
+): Promise<Script> {
+  const decoded = decodeText(bytes);
+  return createScriptFor(
+    userId,
+    { ...meta, content: decoded.text, format: { encoding: decoded.encoding, lineEnding: decoded.lineEnding } },
+    { action: 'script.upload', meta: { ...activityMeta, ...(decoded.fallback ? { decodedAs: decoded.fallback } : {}) } },
   );
 }
 

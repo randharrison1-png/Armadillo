@@ -12,7 +12,8 @@ export type DecodedText = {
   fallback?: 'windows-1252';
 };
 
-function lineEndingOf(text: string): 'crlf' | 'lf' | 'mixed' {
+/** 'crlf' / 'lf' when every newline is that kind (or there are none: 'lf'); otherwise 'mixed'. */
+export function lineEndingOf(text: string): 'crlf' | 'lf' | 'mixed' {
   let crlf = 0;
   let lf = 0;
   let cr = 0;

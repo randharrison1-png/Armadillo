@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Bot, Clipboard, Copy, ExternalLink, Loader2, type LucideIcon } from 'lucide-react';
+import { Bot, Clipboard, Copy, Download, ExternalLink, Loader2, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
@@ -18,9 +18,11 @@ import { getContextStore } from '@/features/claude/contextSelection';
 import { OS_LABEL } from '@/features/sessions/schema';
 import { duplicateScriptAction, getScriptContent } from './actions';
 import { CATEGORY_LABEL, FUNCTION_LABEL } from './filters';
+import { downloadHref } from './scriptTabs';
 import type { ScriptListItem } from './service';
+import type { SessionChoice } from './versionTypes';
 
-export type SessionChoice = { id: string; title: string };
+export type { SessionChoice } from './versionTypes';
 
 const formatDate = (d: Date) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(d);
 
@@ -139,6 +141,13 @@ function RowActions({ script, sessions }: { script: ScriptListItem; sessions: Se
           <ExternalLink aria-hidden className="size-4" />
         </Link>
       </Tip>
+      {script.current_version_id ? (
+        <Tip label={`Download v${script.current_version_no ?? ''}`.trim()}>
+          <a href={downloadHref(script.current_version_id)} download aria-label="Download" className={iconButton}>
+            <Download aria-hidden className="size-4" />
+          </a>
+        </Tip>
+      ) : null}
       <ActionButton label="Copy" icon={Copy} busy={copying} onClick={copy} />
       <ActionButton label="Copy to clipboard" icon={Clipboard} busy={clipping} onClick={toClipboard} />
       <UseInClaude script={script} sessions={sessions} />

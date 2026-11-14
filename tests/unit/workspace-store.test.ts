@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getWorkspaceStore, resetWorkspaceStores } from '@/features/workspace/store';
+import { getWorkspaceStore, libraryWorkspace, resetWorkspaceStores } from '@/features/workspace/store';
 import type { TabDescriptor } from '@/lib/types';
 
 const script = (n: number): TabDescriptor => ({ key: `script:${n}`, kind: 'script', title: `Script ${n}`, resourceId: `${n}` });
@@ -100,5 +100,25 @@ describe('workspace store', () => {
     } finally {
       Storage.prototype.setItem = orig;
     }
+  });
+
+  it('a library namespace starts with (and pins) its script editor tab, stored separately', () => {
+    const cfg = libraryWorkspace({ key: 'script:x', kind: 'script', title: 'x.ps1', resourceId: 'x' });
+    expect(cfg.namespace).toBe('library:x');
+    const st = getWorkspaceStore(cfg.namespace, cfg);
+    expect(st.getState().tabs.map((t) => t.key)).toEqual(['script:x']);
+    expect(st.getState().activeKey).toBe('script:x');
+    st.getState().closeTab('script:x');
+    expect(st.getState().tabs.map((t) => t.key)).toEqual(['script:x']);
+    st.getState().openTab({ key: 'diff:x', kind: 'diff', title: 'd' });
+    expect(localStorage.getItem('armadillo.tabs.library:x')).toContain('diff:x');
+    // A persisted list that lost the pinned tab gets it back (not the Claude tab).
+    localStorage.setItem('armadillo.tabs.library:y', JSON.stringify({ tabs: [{ key: 'diff:y', kind: 'diff', title: 'd' }], activeKey: 'diff:y' }));
+    const y = libraryWorkspace({ key: 'script:y', kind: 'script', title: 'y.ps1', resourceId: 'y' });
+    const sy = getWorkspaceStore(y.namespace, y);
+    sy.getState().hydrate();
+    expect(sy.getState().tabs.map((t) => t.key)).toEqual(['script:y', 'diff:y']);
+    // Session stores are unaffected.
+    expect(keys('a')).toEqual(['claude', 'flowchart']);
   });
 });
