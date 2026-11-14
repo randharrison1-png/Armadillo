@@ -45,6 +45,30 @@ describe('addReadmeFor', () => {
     expect(acts).toEqual([{ action: 'readme.add', entity_id: r.id }]);
   });
 
+  it('commits the README and the open_readme step change together', async () => {
+    const s = await fresh();
+    const r = await addReadmeFor(current.id, { sessionId: s.id, pasted: 'Atomic.' });
+    expect(await stepStatus(s.id)).toBe('in_progress');
+    const ev = await sql`select to_status from public.workflow_step_events where session_id = ${s.id} and step = 'open_readme'`;
+    expect(ev).toEqual([{ to_status: 'in_progress' }]);
+    expect(await sql`select 1 from public.readmes where id = ${r.id}`).toHaveLength(1);
+  });
+
+  it('rolls the README back when the step change fails', async () => {
+    const s = await fresh();
+    await sql.unsafe(`create or replace function public.test_fail_step() returns trigger language plpgsql as $$ begin raise exception 'forced step failure'; end $$`);
+    await sql.unsafe(`create trigger test_fail_step before insert on public.workflow_step_events for each row execute function public.test_fail_step()`);
+    try {
+      await expect(addReadmeFor(current.id, { sessionId: s.id, pasted: 'Will not stick.' })).rejects.toThrow(/forced step failure/);
+    } finally {
+      await sql.unsafe('drop trigger test_fail_step on public.workflow_step_events');
+      await sql.unsafe('drop function public.test_fail_step()');
+    }
+    expect(await sql`select 1 from public.readmes where session_id = ${s.id}`).toHaveLength(0);
+    expect(await sql`select 1 from public.activity_log where session_id = ${s.id} and action = 'readme.add'`).toHaveLength(0);
+    expect(await stepStatus(s.id)).toBe('not_started');
+  });
+
   it('gives identical text identical segment ids (paste and upload agree)', async () => {
     const s = await fresh();
     const text = new TextDecoder().decode(fixture('readme.md'));

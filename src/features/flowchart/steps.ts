@@ -1,7 +1,7 @@
 import 'server-only';
 import { logActivity } from '@/server/activity';
 import { requireUser } from '@/server/auth';
-import { withUser } from '@/server/db/withUser';
+import { withUser, type Tx } from '@/server/db/withUser';
 import type { StepKey, StepStatus, WorkflowStep } from '@/lib/types';
 
 export { STEP_LABEL, STEP_ORDER, currentStep, stageLabel } from './stepMeta';
@@ -13,14 +13,16 @@ export { STEP_LABEL, STEP_ORDER, currentStep, stageLabel } from './stepMeta';
  * A request that does not change the status is a no-op: nothing is written.
  * Throws if the session/step is not found (or not owned), or the session is completed.
  */
-export async function setStepStatus(input: {
-  sessionId: string;
-  step: StepKey;
-  status: StepStatus;
-  note?: string;
-}): Promise<WorkflowStep> {
+export async function setStepStatus(input: StepStatusInput): Promise<WorkflowStep> {
   const user = await requireUser();
-  return withUser(user.id, async (tx) => {
+  return withUser(user.id, (tx) => setStepStatusTx(tx, input));
+}
+
+export type StepStatusInput = { sessionId: string; step: StepKey; status: StepStatus; note?: string };
+
+/** setStepStatus inside the caller's transaction (`tx` from withUser), so it commits or rolls back with the caller's own writes. */
+export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<WorkflowStep> {
+  {
     const [session] = await tx<{ current_cycle: number }[]>`
       select current_cycle from public.sessions where id = ${input.sessionId}`;
     if (!session) throw new Error('Session not found');
@@ -46,5 +48,5 @@ export async function setStepStatus(input: {
       meta: { step: input.step, from: step.status, to: input.status },
     });
     return updated;
-  });
+  }
 }

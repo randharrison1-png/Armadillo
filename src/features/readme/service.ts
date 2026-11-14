@@ -3,7 +3,7 @@ import { logActivity } from '@/server/activity';
 import { withUser } from '@/server/db/withUser';
 import { extractDocument, type ExtractedDocument } from '@/server/files/extract';
 import { MAX_TEXT_BYTES } from '@/server/files/limits';
-import { setStepStatus } from '@/features/flowchart/steps';
+import { setStepStatusTx } from '@/features/flowchart/steps';
 import type { OsType, Readme, StepStatus } from '@/lib/types';
 
 /** Pasted README text is capped like any other text input (2 MB of UTF-8). */
@@ -28,7 +28,7 @@ export class ReadmeInputError extends Error {
   readonly name = 'ReadmeInputError';
 }
 
-export type ReadmeSummary = Pick<Readme, 'id' | 'source' | 'filename' | 'has_text_layer' | 'created_at'> & { segment_count: number };
+export type ReadmeSummary = Pick<Readme, 'id' | 'source' | 'filename' | 'has_text_layer' | 'created_at'>;
 
 export type ReadmeFileInput = { bytes: Uint8Array; filename: string; storagePath?: string };
 
@@ -39,7 +39,7 @@ export type ReadmeFileInput = { bytes: Uint8Array; filename: string; storagePath
  * never touched: a re-add is a new row (requirements reference a specific readme_id).
  *
  * After a README with text is recorded, the session's open_readme step moves not_started ->
- * in_progress (own transaction; a failure there does not undo the README). A scanned PDF (no text
+ * in_progress in the same transaction (a failure rolls both back). A scanned PDF (no text
  * layer) is stored with empty segments and does not move the step.
  *
  * Throws NotFoundError (missing or foreign session), SessionReadOnlyError, ReadmeInputError, and
@@ -73,7 +73,7 @@ export async function addReadmeFor(
     storagePath = input.file!.storagePath ?? null;
   }
 
-  const { readme, openStatus } = await withUser(userId, async (tx) => {
+  const readme = await withUser(userId, async (tx) => {
     if (!UUID_RE.test(input.sessionId)) throw new NotFoundError();
     const [session] = await tx<{ status: 'active' | 'completed' }[]>`select status from public.sessions where id = ${input.sessionId}`;
     if (!session) throw new NotFoundError();
@@ -89,18 +89,14 @@ export async function addReadmeFor(
       sessionId: input.sessionId,
       meta: { source, hasTextLayer: doc.hasTextLayer, segments: doc.segments.length, filename },
     });
+    // Same transaction as the insert: if the step change fails, no README is recorded either.
     const [step] = await tx<{ status: StepStatus }[]>`
       select status from public.workflow_steps where session_id = ${input.sessionId} and step = 'open_readme'`;
-    return { readme: row, openStatus: step?.status ?? null };
-  });
-
-  if (doc.hasTextLayer && openStatus === 'not_started') {
-    try {
-      await setStepStatus({ sessionId: input.sessionId, step: 'open_readme', status: 'in_progress' });
-    } catch (e) {
-      console.error('Could not mark open_readme in progress', e);
+    if (doc.hasTextLayer && step?.status === 'not_started') {
+      await setStepStatusTx(tx, { sessionId: input.sessionId, step: 'open_readme', status: 'in_progress' });
     }
-  }
+    return row;
+  });
   return readme;
 }
 
@@ -121,7 +117,7 @@ export function getReadmeOverviewFor(userId: string, sessionId: string): Promise
     const [step] = await tx<{ status: StepStatus }[]>`
       select status from public.workflow_steps where session_id = ${sessionId} and step = 'open_readme'`;
     const readmes = await tx<ReadmeSummary[]>`
-      select id, source, filename, has_text_layer, created_at, jsonb_array_length(segments)::int as segment_count
+      select id, source, filename, has_text_layer, created_at
       from public.readmes where session_id = ${sessionId} order by created_at desc, id`;
     return { os: session.os, sessionStatus: session.status, openReadmeStatus: step?.status ?? 'not_started', readmes };
   });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, FileWarning } from 'lucide-react';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
@@ -16,6 +16,8 @@ import { segmentDomId, useReadmeUi } from './readmeUi';
 export const NO_TEXT_MESSAGE = 'No extractable text — paste the README instead';
 
 const HIGHLIGHT_MS = 2000;
+/** Segments mounted at first; "Show more" (or openSegment) extends it. */
+export const RENDER_CHUNK = 400;
 
 const dateLabel = (d: Date) => `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(d)} UTC`;
 
@@ -32,6 +34,8 @@ export function ReadmeTab({ namespace: sessionId, tab }: { namespace: string; ta
   const version = useReadmeUi((s) => s.version[sessionId] ?? 0);
   const pending = useReadmeUi((s) => s.pending[sessionId]);
   const consumeSegment = useReadmeUi((s) => s.consumeSegment);
+  const requestSegment = useReadmeUi((s) => s.requestSegment);
+  const [shown, setShown] = useState<{ id: string | null; n: number }>({ id: null, n: RENDER_CHUNK });
   const openIntake = useReadmeUi((s) => s.openIntake);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lit = useRef<HTMLElement | null>(null);
@@ -70,6 +74,16 @@ export function ReadmeTab({ namespace: sessionId, tab }: { namespace: string; ta
 
   const ready = load.state === 'ready' ? load.view : null;
   const segments = ready?.readme?.segments;
+  const readmeId = ready?.readme?.id ?? null;
+
+  // Large READMEs render incrementally. A requested segment past the rendered chunk extends it in
+  // this same render, so its element exists when the effect below scrolls to it.
+  let count = shown.id === readmeId ? shown.n : RENDER_CHUNK;
+  const wanted = pending && segments ? segments.findIndex((s) => s.id === pending.segmentId) : -1;
+  if (wanted >= count) {
+    count = wanted + 1;
+    setShown({ id: readmeId, n: count });
+  }
 
   // A queued openSegment request, or a #seg-... URL hash, once the segments are in the DOM.
   useEffect(() => {
@@ -90,8 +104,9 @@ export function ReadmeTab({ namespace: sessionId, tab }: { namespace: string; ta
     } catch {
       return;
     }
-    if (segments.some((s) => s.id === id)) reveal(id);
-  }, [segments, pending, reveal, consumeSegment, sessionId]);
+    // Queue it like openSegment does, so segments beyond the rendered chunk are revealed first.
+    if (segments.some((s) => s.id === id)) requestSegment(sessionId, id);
+  }, [segments, pending, reveal, consumeSegment, requestSegment, sessionId]);
 
   if (load.state === 'loading') return <LoadingState label="Loading README" />;
   if (load.state === 'error') return <ErrorState title="Could not load the README" detail="Check your connection and try again." onRetry={() => (setLoad({ state: 'loading' }), setAttempt((n) => n + 1))} />;
@@ -147,16 +162,26 @@ export function ReadmeTab({ namespace: sessionId, tab }: { namespace: string; ta
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {readme.segments.map((seg) => (
+          {readme.segments.slice(0, count).map((seg) => (
             <SegmentBlock key={seg.id} segment={seg} />
           ))}
+          {count < readme.segments.length ? (
+            <div className="flex items-center gap-4">
+              <p className="text-small text-muted">
+                Showing {count} of {readme.segments.length} sections
+              </p>
+              <Button variant="secondary" onClick={() => setShown({ id: readmeId, n: count + RENDER_CHUNK })}>
+                Show more
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
     </article>
   );
 }
 
-function SegmentBlock({ segment }: { segment: Segment }) {
+const SegmentBlock = memo(function SegmentBlock({ segment }: { segment: Segment }) {
   const ring = 'scroll-mt-4 rounded-sm outline-0 outline-offset-4 data-highlight:outline-2 data-highlight:outline-accent';
   if (segment.kind === 'page') {
     return (
@@ -171,4 +196,4 @@ function SegmentBlock({ segment }: { segment: Segment }) {
       {segment.text}
     </p>
   );
-}
+});

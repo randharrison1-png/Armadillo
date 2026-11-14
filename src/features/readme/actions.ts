@@ -102,7 +102,9 @@ export async function recordUploadedReadme(input: { sessionId: string; storagePa
   }
 }
 
-export type ReadmeView = ReadmeOverview & { readme: Readme | null };
+/** A README as the client needs it. `text` is omitted (the segments carry the same text; sending both doubles the payload). */
+export type ReadmeBody = Omit<Readme, 'text' | 'owner_id' | 'updated_at' | 'storage_path'>;
+export type ReadmeView = ReadmeOverview & { readme: ReadmeBody | null };
 
 /**
  * Data for the README tab: the session's OS/status, every README (newest first) and the one to
@@ -114,5 +116,16 @@ export async function loadReadmeView(sessionId: string, readmeId?: string): Prom
   if (!overview) return null;
   const target = readmeId ?? overview.readmes[0]?.id;
   if (!target || !overview.readmes.some((r) => r.id === target)) return { ...overview, readme: null };
-  return { ...overview, readme: await getReadmeFor(user.id, target) };
+  const full = await getReadmeFor(user.id, target);
+  if (!full) return { ...overview, readme: null };
+  const readme: ReadmeBody = {
+    id: full.id,
+    session_id: full.session_id,
+    source: full.source,
+    filename: full.filename,
+    segments: full.segments,
+    has_text_layer: full.has_text_layer,
+    created_at: full.created_at,
+  };
+  return { ...overview, readme };
 }

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -131,4 +131,31 @@ test('intake shows an error for a file type that is not allowed and never record
   await dialog.getByLabel('File').setInputFiles(path.join(FIXTURES, 'sample.exe'));
   await expect(dialog.getByRole('alert')).toContainText('.txt .md .pdf');
   await expect(dialog.getByRole('button', { name: 'Upload README' })).toBeDisabled();
+});
+
+test('a 5,000-paragraph README renders incrementally and a deep segment is still reachable', async ({ page }) => {
+  await signIn(page);
+  await newSession(page, 'Big readme');
+  const paragraphs = Array.from({ length: 5000 }, (_, i) => `Paragraph number ${i} of the README.`);
+  const dialog = await openIntake(page);
+  await dialog.getByRole('tab', { name: 'Upload' }).click();
+  await dialog.getByLabel('File').setInputFiles({ name: 'big.txt', mimeType: 'text/plain', buffer: Buffer.from(paragraphs.join('\n\n')) });
+  await dialog.getByRole('button', { name: 'Upload README' }).click();
+  await expect(dialog).toBeHidden();
+
+  const panel = page.getByRole('tabpanel');
+  await expect(panel.getByText('Paragraph number 0 of the README.')).toBeVisible();
+  expect(await panel.locator('[id^="seg-p-"]').count()).toBeLessThanOrEqual(400);
+  await expect(panel.getByText('Showing 400 of 5000 sections')).toBeVisible();
+  await panel.getByRole('button', { name: 'Show more' }).click();
+  await expect(panel.getByText('Showing 800 of 5000 sections')).toBeVisible();
+
+  // Deep link to the last segment (same queue openSegment uses): it is rendered, scrolled to and highlighted.
+  const last = paragraphs[4999]!;
+  const id = `p-4999-${createHash('sha256').update(last).digest('hex').slice(0, 8)}`;
+  await page.goto(`${page.url()}#seg-${id}`);
+  await page.reload();
+  const target = page.getByRole('tabpanel').locator(`#seg-${id}`);
+  await expect(target).toHaveAttribute('data-highlight', 'true');
+  await expect(target).toBeInViewport();
 });

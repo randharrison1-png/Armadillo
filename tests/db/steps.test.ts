@@ -7,7 +7,8 @@ import { createSessionFor } from '@/features/sessions/service';
 let current: { id: string; email: string };
 vi.mock('@/server/auth', () => ({ requireUser: async () => current }));
 
-const { setStepStatus } = await import('@/features/flowchart/steps');
+const { setStepStatus, setStepStatusTx } = await import('@/features/flowchart/steps');
+const { withUser } = await import('@/server/db/withUser');
 
 beforeAll(() => {
   process.env.DATABASE_URL ??= testDatabaseUrl();
@@ -69,5 +70,23 @@ describe('setStepStatus', () => {
     await expect(setStepStatus({ sessionId: s.id, step: 'open_readme', status: 'verified' })).rejects.toThrow();
     const [{ n }] = await sql`select count(*)::int as n from public.workflow_step_events where session_id = ${s.id}`;
     expect(n).toBe(0);
+  });
+});
+
+describe('setStepStatusTx', () => {
+  it('runs in the caller transaction: commits with it and rolls back with it', async () => {
+    const s = await fresh();
+    await expect(
+      withUser(current.id, async (tx) => {
+        await setStepStatusTx(tx, { sessionId: s.id, step: 'open_readme', status: 'in_progress' });
+        throw new Error('caller failed');
+      }),
+    ).rejects.toThrow('caller failed');
+    expect((await sql`select status from public.workflow_steps where session_id = ${s.id} and step = 'open_readme'`)[0].status).toBe('not_started');
+    expect(await sql`select 1 from public.workflow_step_events where session_id = ${s.id}`).toHaveLength(0);
+
+    const row = await withUser(current.id, (tx) => setStepStatusTx(tx, { sessionId: s.id, step: 'open_readme', status: 'in_progress' }));
+    expect(row.status).toBe('in_progress');
+    expect(await sql`select 1 from public.workflow_step_events where session_id = ${s.id}`).toHaveLength(1);
   });
 });
