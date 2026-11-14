@@ -26,6 +26,8 @@ export type RequirementRow = {
   evidenceReportId: string | null;
   /** e.g. "leads.txt · cycle 1" (the verification evidence). */
   evidenceLabel: string | null;
+  /** ISO time the user explicitly reviewed this disruptive requirement; null = not reviewed. */
+  reviewedAt: string | null;
 };
 
 export type ReadmeOption = { id: string; label: string; hasText: boolean };
@@ -44,3 +46,4 @@ export type ActionError = { ok: false; error: string };
 export type ExtractOutcome = { ok: true; inserted: number; dropped: number; replaced: number; kept: number; trimmed: boolean };
 export type AssessOutcome = { ok: true; assessed: number; ignored: number; unassessed: number; skipped: number; trimmed: boolean; scriptLabel: string };
 export type NotesOutcome = { ok: true; notes: string | null };
+export type ReviewOutcome = { ok: true; reviewedAt: string };

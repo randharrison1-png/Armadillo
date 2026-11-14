@@ -11,7 +11,7 @@ import { fieldClass } from '@/components/ui/input';
 import { openSegment, useReadmeUi } from '@/features/readme/readmeUi';
 import type { TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { assessCoverageAction, extractRequirementsAction, loadRequirementsView, saveRequirementNotes } from './actions';
+import { assessCoverageAction, extractRequirementsAction, loadRequirementsView, markRequirementReviewed, saveRequirementNotes } from './actions';
 import { droppedMessage } from './matrix';
 import { RequirementsMatrix } from './RequirementsMatrix';
 import type { RequirementRow, RequirementsView } from './types';
@@ -172,7 +172,7 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
           }
         />
       ) : (
-        <RequirementsMatrix rows={rows} readOnly={completed} onOpenSource={onOpenSource} onSaveNotes={onSaveNotes} />
+        <RequirementsMatrix rows={rows} readOnly={completed} onOpenSource={onOpenSource} onSaveNotes={onSaveNotes} onMarkReviewed={(id) => markRequirementReviewed({ requirementId: id })} />
       )}
 
       <ExtractDialog open={extractOpen} onOpenChange={setExtractOpen} view={view} onConfirm={runExtract} />
@@ -242,7 +242,7 @@ function AssessDialog({ open, onOpenChange, view, onConfirm }: { open: boolean; 
         <DialogHeader>
           <DialogTitle>Assess coverage</DialogTitle>
           <DialogDescription>
-            Claude compares the README with one script version and marks each proposed requirement covered, missing, needs review or manual. This is not proof the machine is hardened.
+            Claude compares the README with one script version and marks each proposed requirement covered, missing or manual, and flags potentially disruptive ones for review. This is not proof the machine is hardened.
           </DialogDescription>
         </DialogHeader>
         {options.length === 0 ? (

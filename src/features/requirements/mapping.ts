@@ -1,4 +1,3 @@
-import type { Coverage } from '@/lib/types';
 import { markerSegmentId } from '@/server/claude/documents';
 import type { AssessedCoverage, AssessmentItem, ExtractedRequirement } from '@/server/claude/schemas';
 
@@ -37,22 +36,23 @@ export function resolveExtracted(
 }
 
 /**
- * Spec §5.3: already handled → covered; missing → missing; potentially disruptive → needs_review;
- * not safely automatable → manual (a manual task). "Not automatable" wins over "disruptive" (a
- * person does it either way), and both win over Claude's covered/missing.
+ * Spec §5.3: already handled → covered; missing → missing; not safely automatable → manual (a
+ * manual task). "Potentially disruptive → require explicit review" is NOT a coverage value: it is
+ * the sticky `disruptive` flag plus the user's explicit review (reviewed_at), so a disruptive
+ * requirement the script handles stays covered and can be reported once reviewed.
  */
-export function coverageFor(a: { coverage: AssessedCoverage; disruptive: boolean; automatable: boolean }): Exclude<Coverage, 'detected'> {
+export function coverageFor(a: { coverage: AssessedCoverage; disruptive: boolean; automatable: boolean }): AssessedCoverage {
   if (a.coverage === 'manual' || !a.automatable) return 'manual';
-  if (a.coverage === 'needs_review' || a.disruptive) return 'needs_review';
   return a.coverage;
 }
 
-export type CoverageUpdate = { coverage: Exclude<Coverage, 'detected'>; suggestion: string | null; disruptive: boolean; automatable: boolean };
+export type CoverageUpdate = { coverage: AssessedCoverage; suggestion: string | null; disruptive: boolean; automatable: boolean };
 
 /**
  * Maps assessments (keyed by the short requirement keys we listed, e.g. R3; case-insensitive) to
  * updates by requirement id. Unknown keys and repeats of a key already seen are ignored and
- * counted. A suggestion is kept only where there is something to change (missing / needs review).
+ * counted. A suggestion is kept only where there is something to change (missing) or to review
+ * (disruptive). `disruptive` here is this assessment's opinion; the stored flag is sticky (OR).
  */
 export function resolveAssessments(
   items: readonly AssessmentItem[],
@@ -68,7 +68,7 @@ export function resolveAssessments(
       continue;
     }
     const coverage = coverageFor(a);
-    const suggestion = coverage === 'missing' || coverage === 'needs_review' ? a.suggestion?.trim() || null : null;
+    const suggestion = coverage === 'missing' || a.disruptive ? a.suggestion?.trim() || null : null;
     updates.set(id, { coverage, suggestion, disruptive: a.disruptive, automatable: coverage !== 'manual' && a.automatable });
   }
   return { updates, ignored };

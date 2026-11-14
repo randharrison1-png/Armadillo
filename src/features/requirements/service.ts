@@ -3,7 +3,7 @@ import { logActivity } from '@/server/activity';
 import { withUser, type Tx } from '@/server/db/withUser';
 import { callClaudeTool, ClaudeUpstreamError, StructuredOutputError, type ClaudeToolResult } from '@/server/claude/client';
 import { ForbiddenError } from '@/server/claude/context';
-import { assessmentInstruction, extractionInstruction } from '@/server/claude/prompts/requirements';
+import { assessmentData, assessmentInstruction, extractionInstruction } from '@/server/claude/prompts/requirements';
 import { ASSESS_TOOL, AssessmentSchema, EXTRACT_TOOL, ExtractionSchema, MAX_EXTRACTED, type Assessment, type Extraction } from '@/server/claude/schemas';
 import { NO_TEXT_MESSAGE } from '@/features/readme/messages';
 import { NotFoundError, SessionReadOnlyError } from '@/features/readme/service';
@@ -188,9 +188,12 @@ export type AssessResult = {
 /**
  * Assesses the session's PROPOSED requirements against one script version (a script of this
  * session, or a universal library script). Coverage per spec §5.3 (see coverageFor): covered,
- * missing (+ suggestion), needs_review (potentially disruptive), manual (not safely automatable).
- * work_state stays 'proposed'; script_version_id records what was assessed. Listed requirements
- * Claude skipped lose any earlier coverage (it would describe another script).
+ * missing (+ suggestion), manual (not safely automatable). Potentially disruptive is the separate
+ * `disruptive` flag, which is sticky: an assessment can set it but never clear it (OR with the
+ * stored value), and it needs the user's explicit review (markRequirementReviewedFor) before the
+ * requirement can be reported. work_state stays 'proposed'; script_version_id records what was
+ * assessed. Listed requirements Claude skipped lose any earlier coverage (it would describe
+ * another script).
  */
 export async function assessCoverageFor(userId: string, input: { sessionId: string; scriptVersionId: string }): Promise<AssessResult> {
   const sessionId = String(input.sessionId);
@@ -230,7 +233,10 @@ export async function assessCoverageFor(userId: string, input: { sessionId: stri
       userId,
       sessionId,
       refs,
-      instruction: (nonce) => assessmentInstruction(nonce, listed),
+      // The requirement texts are untrusted data (Claude wrote them from the README): a nonce'd block,
+      // never the trusted instruction, which names only the keys.
+      data: [assessmentData(listed)],
+      instruction: (nonce) => assessmentInstruction(nonce, listed.map((r) => r.key)),
       tool: ASSESS_TOOL,
       schema: AssessmentSchema,
     });
@@ -248,7 +254,7 @@ export async function assessCoverageFor(userId: string, input: { sessionId: stri
       const assessed = payload.length
         ? await tx`
             update public.requirements r
-            set coverage = u.coverage::public.coverage, suggestion = u.suggestion, disruptive = u.disruptive,
+            set coverage = u.coverage::public.coverage, suggestion = u.suggestion, disruptive = r.disruptive or u.disruptive,
                 automatable = u.automatable, script_version_id = ${scriptVersionId}
             from jsonb_to_recordset(${tx.json(payload as never)})
                  as u(id uuid, coverage text, suggestion text, disruptive boolean, automatable boolean)
@@ -308,6 +314,32 @@ export async function updateRequirementNotesFor(userId: string, input: { require
   );
 }
 
+/**
+ * "Mark reviewed": the user explicitly reviewed a potentially disruptive requirement (spec §5.3).
+ * Clears the matrix's "Needs review" marker and lets a covered requirement be reported. Idempotent;
+ * refused for requirements that are not disruptive and on completed sessions.
+ */
+export async function markRequirementReviewedFor(userId: string, input: { requirementId: string }): Promise<{ reviewedAt: Date }> {
+  const requirementId = String(input.requirementId);
+  if (!UUID_RE.test(requirementId)) throw new NotFoundError('Requirement');
+  return writing(() =>
+    withUser(userId, async (tx) => {
+      const [r] = await tx<{ session_id: string; status: 'active' | 'completed'; disruptive: boolean; reviewed_at: Date | null }[]>`
+        select r.session_id, s.status, r.disruptive, r.reviewed_at
+        from public.requirements r join public.sessions s on s.id = r.session_id
+        where r.id = ${requirementId} for update of r`;
+      if (!r) throw new NotFoundError('Requirement');
+      if (r.status === 'completed') throw new SessionReadOnlyError();
+      if (!r.disruptive) throw new RequirementsInputError('Only potentially disruptive requirements need a review.');
+      if (r.reviewed_at) return { reviewedAt: r.reviewed_at };
+      const [row] = await tx<{ reviewed_at: Date }[]>`
+        update public.requirements set reviewed_at = now() where id = ${requirementId} returning reviewed_at`;
+      await logActivity(tx, { action: 'requirement.reviewed', entityType: 'requirement', entityId: requirementId, sessionId: r.session_id });
+      return { reviewedAt: row.reviewed_at };
+    }),
+  );
+}
+
 const dateLabel = (d: Date) => `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(d)} UTC`;
 
 type ViewRow = {
@@ -324,6 +356,7 @@ type ViewRow = {
   notes: string | null;
   script_version_id: string | null;
   evidence_report_id: string | null;
+  reviewed_at: Date | null;
   source_kind: string | null;
   source_index: number | null;
   script_label: string | null;
@@ -353,7 +386,7 @@ export function getRequirementsViewFor(userId: string, sessionId: string): Promi
         where m.session_id = ${sessionId}
       )
       select r.id, r.readme_id, r.text, r.segment_id, r.category, r.coverage, r.work_state, r.disruptive, r.automatable,
-             r.suggestion, r.notes, r.script_version_id, r.evidence_report_id,
+             r.suggestion, r.notes, r.script_version_id, r.evidence_report_id, r.reviewed_at,
              segs.kind as source_kind, segs.idx as source_index,
              case when sv.id is null then null else s.name || ' · v' || sv.version_no end as script_label,
              case when lr.id is null then null else lr.filename || ' · cycle ' || lr.cycle_no end as evidence_label
@@ -393,6 +426,7 @@ export function getRequirementsViewFor(userId: string, sessionId: string): Promi
       scriptLabel: r.script_label,
       evidenceReportId: r.evidence_report_id,
       evidenceLabel: r.evidence_label,
+      reviewedAt: r.reviewed_at ? r.reviewed_at.toISOString() : null,
     }));
     return { sessionStatus: status, readmes: readmeOptions, scriptOptions, requirements };
   });

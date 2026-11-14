@@ -40,12 +40,12 @@ describe('extraction: citations', () => {
 });
 
 describe('assessment mapping (spec §5.3)', () => {
-  it('maps covered / missing / disruptive / not automatable', () => {
+  it('maps covered / missing / not automatable; disruptiveness never changes coverage', () => {
     expect(coverageFor({ coverage: 'covered', disruptive: false, automatable: true })).toBe('covered');
     expect(coverageFor({ coverage: 'missing', disruptive: false, automatable: true })).toBe('missing');
-    expect(coverageFor({ coverage: 'covered', disruptive: true, automatable: true })).toBe('needs_review');
-    expect(coverageFor({ coverage: 'missing', disruptive: true, automatable: true })).toBe('needs_review');
-    expect(coverageFor({ coverage: 'needs_review', disruptive: false, automatable: true })).toBe('needs_review');
+    // Disruptive is a separate, sticky review flag (finding r1-1): a covered disruptive requirement stays covered.
+    expect(coverageFor({ coverage: 'covered', disruptive: true, automatable: true })).toBe('covered');
+    expect(coverageFor({ coverage: 'missing', disruptive: true, automatable: true })).toBe('missing');
     expect(coverageFor({ coverage: 'covered', disruptive: false, automatable: false })).toBe('manual');
     expect(coverageFor({ coverage: 'manual', disruptive: true, automatable: true })).toBe('manual');
   });
@@ -55,7 +55,7 @@ describe('assessment mapping (spec §5.3)', () => {
       ['R1', 'id-1'],
       ['R2', 'id-2'],
     ]);
-    const a = (requirement_id: string, coverage: 'covered' | 'missing' | 'needs_review' | 'manual', extra = {}) => ({
+    const a = (requirement_id: string, coverage: 'covered' | 'missing' | 'manual', extra = {}) => ({
       requirement_id,
       coverage,
       disruptive: false,
@@ -69,6 +69,14 @@ describe('assessment mapping (spec §5.3)', () => {
     expect(ignored).toBe(3);
     expect(updates.get('id-1')).toEqual({ coverage: 'covered', suggestion: null, disruptive: false, automatable: true });
     expect(updates.get('id-2')).toEqual({ coverage: 'missing', suggestion: 'Add Disable-LocalUser Guest', disruptive: false, automatable: true });
+  });
+
+  it('a disruptive item keeps its suggestion (what to review) even when covered', () => {
+    const { updates } = resolveAssessments(
+      [{ requirement_id: 'R1', coverage: 'covered', suggestion: 'Script stops the RDP service', disruptive: true, automatable: true }],
+      new Map([['R1', 'x']]),
+    );
+    expect(updates.get('x')).toEqual({ coverage: 'covered', suggestion: 'Script stops the RDP service', disruptive: true, automatable: true });
   });
 
   it('a manual task is never marked automatable', () => {
@@ -95,6 +103,7 @@ const row = (over: Partial<RequirementRow> = {}): RequirementRow => ({
   scriptLabel: null,
   evidenceReportId: null,
   evidenceLabel: null,
+  reviewedAt: null,
   ...over,
 });
 
@@ -119,6 +128,8 @@ describe('matrix helpers', () => {
     expect(c.total).toBe(4);
     expect(c.coverage).toEqual({ detected: 0, covered: 2, missing: 1, needs_review: 0, manual: 1 });
     expect(c.state).toEqual({ proposed: 2, reported: 1, verified: 1 });
+    expect(c.needsReview).toBe(0);
+    expect(countRows([row({ disruptive: true }), row({ disruptive: true, reviewedAt: '2026-11-14T00:00:00Z' })]).needsReview).toBe(1);
   });
 
   it('dropped-items message', () => {

@@ -79,7 +79,8 @@ export type Extraction = z.infer<typeof ExtractionSchema>;
 // Coverage assessment
 // ------------------------------------------------------------------------------------------------
 
-export const ASSESSED_COVERAGE = ['covered', 'missing', 'needs_review', 'manual'] as const;
+/** Claude's coverage verdict. Disruptiveness is a separate, sticky flag (never a coverage value). */
+export const ASSESSED_COVERAGE = ['covered', 'missing', 'manual'] as const;
 export type AssessedCoverage = (typeof ASSESSED_COVERAGE)[number];
 
 export const ASSESS_TOOL: ClaudeTool = {
@@ -99,11 +100,10 @@ export const ASSESS_TOOL: ClaudeTool = {
             coverage: {
               type: 'string',
               enum: [...ASSESSED_COVERAGE],
-              description:
-                'covered: the script already does it. missing: the script does not do it. needs_review: doing it (or what the script does about it) is potentially disruptive. manual: it cannot safely be automated.',
+              description: 'covered: the script already does it. missing: the script does not do it. manual: it cannot safely be automated.',
             },
-            suggestion: { type: 'string', description: 'For missing or needs_review: the change to make to the script, briefly.' },
-            disruptive: { type: 'boolean' },
+            suggestion: { type: 'string', description: 'For missing: the change to make to the script. For a disruptive requirement: what a person should review. Brief.' },
+            disruptive: { type: 'boolean', description: 'True when doing it, or what the script does about it, could stop a required service or lock the operator out.' },
             automatable: { type: 'boolean' },
           },
           required: ['requirement_id', 'coverage', 'disruptive', 'automatable'],

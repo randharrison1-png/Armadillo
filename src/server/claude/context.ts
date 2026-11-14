@@ -106,6 +106,8 @@ export async function buildContext(input: {
   budgetTokens: number;
   /** Tests only; production uses a fresh random nonce. */
   nonce?: string;
+  /** Structured calls: the one (recording-only) tool this request forces; the system prompt names it. */
+  structuredTool?: string;
 }): Promise<AssembledContext> {
   const { userId, sessionId, budgetTokens } = input;
   if (!UUID_RE.test(sessionId) || input.refs.length > MAX_REFS) throw new ForbiddenError();
@@ -129,5 +131,5 @@ export async function buildContext(input: {
 
   const nonce = input.nonce ?? newNonce();
   const { blocks, trimmed } = allocateBodies(docs, budgetTokens, nonce);
-  return { system: buildSystemPrompt(session, nonce), documents: blocks.join('\n\n'), trimmed, nonce };
+  return { system: buildSystemPrompt(session, nonce, { structuredTool: input.structuredTool }), documents: blocks.join('\n\n'), trimmed, nonce };
 }

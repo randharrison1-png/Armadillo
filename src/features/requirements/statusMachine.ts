@@ -6,7 +6,8 @@ import type { Requirement, WorkState } from '@/lib/types';
  *
  *   proposed → reported   the requirement is covered by a script version (coverage 'covered' with
  *                         script_version_id) and that script was reported run (Task 18 calls this
- *                         when execution output is uploaded).
+ *                         when execution output is uploaded). A potentially disruptive requirement
+ *                         must first have been reviewed explicitly by the user (reviewed_at).
  *   reported → verified   only with verification evidence (a LEADS report id).
  *   proposed → verified   only for a manual task (coverage 'manual'), and only with evidence.
  *
@@ -40,6 +41,7 @@ export function transition<R extends Requirement>(r: R, to: WorkState, evidence?
   if (to === 'reported') {
     if (from !== 'proposed') fail('only a proposed requirement can be reported');
     if (r.coverage !== 'covered' || !r.script_version_id) fail('no script version covers it');
+    if (r.disruptive && !r.reviewed_at) fail('it is potentially disruptive and has not been reviewed');
     return { ...r, work_state: 'reported' };
   }
   if (to === 'verified') {

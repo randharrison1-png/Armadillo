@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useState } from 'react';
-import { AlertTriangle, CircleCheck, CircleDashed, CircleDot, FileText, Pencil, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CircleCheck, CircleDashed, CircleDot, FileText, Pencil, ShieldCheck, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fieldClass } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,16 +12,17 @@ import {
   countRows,
   COVERAGE_HINT,
   COVERAGE_LABEL,
-  COVERAGES,
   filterRows,
   isShownVerified,
+  needsReview,
+  shownCoverages,
   sourceLabel,
   WORK_STATE_HINT,
   WORK_STATE_LABEL,
   WORK_STATES,
   type MatrixFilters,
 } from './matrix';
-import type { ActionError, NotesOutcome, RequirementRow } from './types';
+import type { ActionError, NotesOutcome, RequirementRow, ReviewOutcome } from './types';
 
 export const NOTES_MAX = 4000;
 
@@ -30,6 +31,8 @@ type Props = {
   readOnly: boolean;
   onOpenSource: (row: RequirementRow) => void;
   onSaveNotes: (id: string, notes: string) => Promise<NotesOutcome | ActionError>;
+  /** "Mark reviewed" on a potentially disruptive requirement. */
+  onMarkReviewed: (id: string) => Promise<ReviewOutcome | ActionError>;
 };
 
 const STATE_ICON: Record<WorkState, LucideIcon> = { proposed: CircleDashed, reported: CircleDot, verified: CircleCheck };
@@ -39,11 +42,20 @@ const STATE_ICON: Record<WorkState, LucideIcon> = { proposed: CircleDashed, repo
  * filters and summary counts. Coverage is Claude's reading of a script; State is what was done
  * (Proposed / Reported / Verified). "Verified" is only ever shown with its evidence report.
  */
-export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes }: Props) {
+export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes, onMarkReviewed }: Props) {
   const [filters, setFilters] = useState<MatrixFilters>({ coverage: 'all', state: 'all' });
+  // Reviews done here show at once; a reload brings the same value from the server.
+  const [reviewed, setReviewed] = useState<Record<string, string>>({});
   const id = useId();
-  const counts = countRows(rows);
-  const shown = filterRows(rows, filters);
+  const merged = rows.map((r) => (reviewed[r.id] && !r.reviewedAt ? { ...r, reviewedAt: reviewed[r.id] } : r));
+  const counts = countRows(merged);
+  const coverages = shownCoverages(counts.coverage);
+  const shown = filterRows(merged, filters);
+  const markReviewed = async (rowId: string) => {
+    const res = await onMarkReviewed(rowId);
+    if (res.ok) setReviewed((m) => ({ ...m, [rowId]: res.reviewedAt }));
+    return res;
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -54,12 +66,16 @@ export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes }
           </span>
         </p>
         <ul aria-label="By coverage" className="flex flex-wrap gap-x-4 gap-y-1">
-          {COVERAGES.map((c) => (
+          {coverages.map((c) => (
             <li key={c}>
               {COVERAGE_LABEL[c]} <span className="text-text">{counts.coverage[c]}</span>
             </li>
           ))}
         </ul>
+        <p>
+          Needs review <span className="text-text">{counts.needsReview}</span>
+          <span className="sr-only"> (potentially disruptive, not yet reviewed)</span>
+        </p>
         <ul aria-label="By state" className="flex flex-wrap gap-x-4 gap-y-1">
           {WORK_STATES.map((s) => (
             <li key={s}>
@@ -79,7 +95,7 @@ export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes }
             onChange={(e) => setFilters((f) => ({ ...f, coverage: e.target.value as Coverage | 'all' }))}
           >
             <option value="all">All coverage</option>
-            {COVERAGES.map((c) => (
+            {coverages.map((c) => (
               <option key={c} value={c}>
                 {COVERAGE_LABEL[c]}
               </option>
@@ -117,7 +133,7 @@ export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes }
           </thead>
           <tbody>
             {shown.map((r) => (
-              <MatrixRow key={r.id} row={r} readOnly={readOnly} onOpenSource={onOpenSource} onSaveNotes={onSaveNotes} />
+              <MatrixRow key={r.id} row={r} readOnly={readOnly} onOpenSource={onOpenSource} onSaveNotes={onSaveNotes} onMarkReviewed={markReviewed} />
             ))}
           </tbody>
         </table>
@@ -127,7 +143,7 @@ export function RequirementsMatrix({ rows, readOnly, onOpenSource, onSaveNotes }
   );
 }
 
-function MatrixRow({ row: r, readOnly, onOpenSource, onSaveNotes }: { row: RequirementRow } & Omit<Props, 'rows'>) {
+function MatrixRow({ row: r, readOnly, onOpenSource, onSaveNotes, onMarkReviewed }: { row: RequirementRow } & Omit<Props, 'rows'>) {
   const source = sourceLabel(r.sourceKind, r.sourceIndex);
   return (
     <tr className="align-top transition-colors duration-150 hover:bg-surface">
@@ -135,13 +151,14 @@ function MatrixRow({ row: r, readOnly, onOpenSource, onSaveNotes }: { row: Requi
         <p className="break-words text-body text-text">{r.text}</p>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted">
           {r.category ? <span>{CATEGORY_LABEL[r.category] ?? r.category}</span> : null}
-          {r.disruptive ? (
-            <span data-testid="disruptive-marker" className="inline-flex items-center gap-1 text-warning" title="Potentially disruptive: review it explicitly before running anything.">
-              <AlertTriangle aria-hidden className="size-4 shrink-0" />
-              Needs review
+          {r.disruptive && !needsReview(r) ? (
+            <span className="inline-flex items-center gap-1" title="Potentially disruptive; reviewed explicitly.">
+              <ShieldCheck aria-hidden className="size-4 shrink-0" />
+              Disruptive · reviewed
             </span>
           ) : null}
         </p>
+        {needsReview(r) ? <ReviewControl row={r} readOnly={readOnly} onMarkReviewed={onMarkReviewed} /> : null}
         {r.suggestion ? (
           <p className="mt-1 break-words text-muted">
             <span className="text-text">Suggested change:</span> <span className="font-mono">{r.suggestion}</span>
@@ -171,6 +188,41 @@ function MatrixRow({ row: r, readOnly, onOpenSource, onSaveNotes }: { row: Requi
         <NoteCell row={r} readOnly={readOnly} onSaveNotes={onSaveNotes} />
       </td>
     </tr>
+  );
+}
+
+function ReviewControl({ row: r, readOnly, onMarkReviewed }: { row: RequirementRow; readOnly: boolean; onMarkReviewed: Props['onMarkReviewed'] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <span data-testid="disruptive-marker" className="inline-flex items-center gap-1 text-warning" title="Potentially disruptive: review it explicitly before running anything.">
+        <AlertTriangle aria-hidden className="size-4 shrink-0" />
+        Needs review
+      </span>
+      {readOnly ? null : (
+        <Button
+          variant="secondary"
+          className="h-control-sm px-2"
+          loading={busy}
+          aria-label={`Mark reviewed: ${r.text}`}
+          onClick={async () => {
+            setBusy(true);
+            setError(null);
+            const res = await onMarkReviewed(r.id).catch(() => ({ ok: false as const, error: 'Could not mark the requirement reviewed. Try again.' }));
+            setBusy(false);
+            if (!res.ok) setError(res.error);
+          }}
+        >
+          Mark reviewed
+        </Button>
+      )}
+      {error ? (
+        <p role="alert" className="w-full text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

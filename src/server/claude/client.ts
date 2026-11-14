@@ -7,6 +7,7 @@ import type { ConversationMode } from '@/server/db/types';
 import type { ClaudeStreamEvents } from '@/features/claude/types';
 import { KeyEncryptionConfigError } from '@/server/security/crypto';
 import { buildContext, ForbiddenError } from './context';
+import { renderDataBlock, type DataBlock } from './documents';
 import type { HistoryMessage } from './history';
 import { ClaudeKeyMissingError, ClaudeKeyUnreadableError, resolveClaudeKeyFor } from './keys';
 import { prepareTurn, readReply, ReplyWriter, tokenUsageOf, trimmedOf, TurnError, type PreparedTurn, type Usage } from './turns';
@@ -287,7 +288,12 @@ export type ClaudeToolInput<T> = {
   sessionId: string;
   /** The ONLY resources Claude sees (checked against the session by buildContext). */
   refs: ResourceRef[];
-  /** The task, given this request's nonce (to name the `[seg-<nonce> <id>]` markers). */
+  /**
+   * Untrusted data that is not a stored resource (e.g. texts Claude wrote earlier from a README).
+   * Rendered in this request's nonce'd untrusted blocks after the documents, never in the trusted turn.
+   */
+  data?: DataBlock[];
+  /** The trusted task, given this request's nonce (to name the `[seg-<nonce> <id>]` markers). */
   instruction: (nonce: string) => string;
   tool: ClaudeTool;
   schema: ZodType<T>;
@@ -309,9 +315,11 @@ export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<Clau
     sessionId: input.sessionId,
     refs: input.refs,
     budgetTokens: numberEnv('CLAUDE_CONTEXT_TOKENS', DEFAULT_CONTEXT_TOKENS),
+    structuredTool: input.tool.name,
   });
   const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
-  const content = [...(ctx.documents ? [{ type: 'text' as const, text: ctx.documents }] : []), { type: 'text' as const, text: input.instruction(ctx.nonce) }];
+  const documents = [ctx.documents, ...(input.data ?? []).map((d) => renderDataBlock(d, ctx.nonce))].filter(Boolean).join('\n\n');
+  const content = [...(documents ? [{ type: 'text' as const, text: documents }] : []), { type: 'text' as const, text: input.instruction(ctx.nonce) }];
   const out = await runToolCall({
     apiKey,
     model: resolveModel(profileModel),

@@ -5,6 +5,12 @@ import type { RequirementRow } from './types';
 /** Client-safe labels and helpers for the requirements matrix. */
 
 export const COVERAGES: readonly Coverage[] = ['detected', 'covered', 'missing', 'needs_review', 'manual'];
+/**
+ * Coverage values offered in filters and counts. Assessment no longer produces 'needs_review'
+ * (potentially disruptive is the sticky `disruptive` flag plus an explicit review), so it is only
+ * shown when a row still has it.
+ */
+export const shownCoverages = (counts: Record<Coverage, number>): Coverage[] => COVERAGES.filter((c) => c !== 'needs_review' || counts[c] > 0);
 export const WORK_STATES: readonly WorkState[] = ['proposed', 'reported', 'verified'];
 
 export const COVERAGE_LABEL: Record<Coverage, string> = {
@@ -19,7 +25,7 @@ export const COVERAGE_HINT: Record<Coverage, string> = {
   detected: 'Found in the README; not assessed against a script yet.',
   covered: 'Claude found it handled in the selected script. Pending verification.',
   missing: 'Not in the selected script; see the suggested change.',
-  needs_review: 'Potentially disruptive: review it explicitly before running anything.',
+  needs_review: 'Needs an explicit review.',
   manual: 'Not safely automatable: do it by hand.',
 };
 
@@ -60,14 +66,19 @@ export function filterRows(rows: readonly RequirementRow[], f: MatrixFilters): R
   return rows.filter((r) => (f.coverage === 'all' || r.coverage === f.coverage) && (f.state === 'all' || r.workState === f.state));
 }
 
+/** Potentially disruptive and not yet explicitly reviewed: shows the "Needs review" marker, cannot be reported. */
+export const needsReview = (r: Pick<RequirementRow, 'disruptive' | 'reviewedAt'>): boolean => r.disruptive && !r.reviewedAt;
+
 export function countRows(rows: readonly RequirementRow[]) {
   const coverage = Object.fromEntries(COVERAGES.map((c) => [c, 0])) as Record<Coverage, number>;
   const state = Object.fromEntries(WORK_STATES.map((s) => [s, 0])) as Record<WorkState, number>;
+  let review = 0;
   for (const r of rows) {
     coverage[r.coverage]++;
     state[r.workState]++;
+    if (needsReview(r)) review++;
   }
-  return { total: rows.length, coverage, state };
+  return { total: rows.length, coverage, state, needsReview: review };
 }
 
 /** A row may show "Verified" only together with its evidence report (audit accuracy). */

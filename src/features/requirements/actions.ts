@@ -10,12 +10,13 @@ import {
   assessCoverageFor,
   extractRequirementsFor,
   getRequirementsViewFor,
+  markRequirementReviewedFor,
   NotFoundError,
   RequirementsInputError,
   SessionReadOnlyError,
   updateRequirementNotesFor,
 } from './service';
-import type { ActionError, AssessOutcome, ExtractOutcome, NotesOutcome, RequirementsView } from './types';
+import type { ActionError, AssessOutcome, ExtractOutcome, NotesOutcome, RequirementsView, ReviewOutcome } from './types';
 
 /** Redirect/auth control-flow errors from requireUser carry a digest and must propagate. */
 function rethrowControlFlow(e: unknown) {
@@ -84,6 +85,17 @@ export async function saveRequirementNotes(input: { requirementId: string; notes
     return { ok: true, notes: r.notes };
   } catch (e) {
     return failure(e, 'Could not save the note. Try again.');
+  }
+}
+
+/** "Mark reviewed" on a potentially disruptive requirement (logged; refused on completed sessions). */
+export async function markRequirementReviewed(input: { requirementId: string }): Promise<ReviewOutcome | ActionError> {
+  try {
+    const user = await requireUser();
+    const r = await markRequirementReviewedFor(user.id, { requirementId: String(input.requirementId) });
+    return { ok: true, reviewedAt: r.reviewedAt.toISOString() };
+  } catch (e) {
+    return failure(e, 'Could not mark the requirement reviewed. Try again.');
   }
 }
 

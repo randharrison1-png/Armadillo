@@ -88,7 +88,7 @@ function fenceFor(body: string): string {
 export const markerSegmentId = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
 
 /** The escaped body: segment texts escaped one by one and joined with the real (unescaped) markers. */
-export function escapedBodyOf(doc: RenderableDoc, nonce: string): string {
+export function escapedBodyOf(doc: Pick<RenderableDoc, 'body' | 'segments'>, nonce: string): string {
   if (!doc.segments) return escapeUntrusted(doc.body, nonce);
   return doc.segments.map((s) => `[seg-${nonce} ${markerSegmentId(s.id)}]\n${escapeUntrusted(s.text, nonce)}`).join('\n\n');
 }
@@ -98,10 +98,15 @@ export function escapedBodyOf(doc: RenderableDoc, nonce: string): string {
  * escaped here, unless `escapedBody` (already escaped, possibly cut) is given: escaping is not
  * idempotent by design, so escaped text must never be escaped again.
  */
-export function renderBlock(doc: RenderableDoc, omitted: number, nonce: string, escapedBody?: string): string {
+export function renderBlock(
+  doc: Omit<RenderableDoc, 'ref'> & { ref: { type: string; id: string } },
+  omitted: number,
+  nonce: string,
+  escapedBody?: string,
+): string {
   const safeBody = escapedBody ?? escapedBodyOf(doc, nonce);
   const tag = `${DOC_TAG}_${nonce}`;
-  const lines = [`<${tag} type="${doc.ref.type}" id="${escapeAttr(doc.ref.id)}" title="${escapeAttr(doc.title)}">`];
+  const lines = [`<${tag} type="${escapeAttr(doc.ref.type)}" id="${escapeAttr(doc.ref.id)}" title="${escapeAttr(doc.title)}">`];
   if (doc.head) lines.push(escapeUntrusted(doc.head, nonce));
   if (doc.fenced) {
     const fence = fenceFor(doc.body);
@@ -112,6 +117,17 @@ export function renderBlock(doc: RenderableDoc, omitted: number, nonce: string, 
   if (omitted > 0) lines.push(`[trimmed: ${omitted} characters omitted]`);
   lines.push(`</${tag}>`);
   return lines.join('\n');
+}
+
+/**
+ * Untrusted DATA that is not a stored resource (e.g. the requirement list of an assessment, which
+ * Claude wrote from a README): rendered exactly like a document, in the request's nonce'd block,
+ * so it carries no authority in the prompt. Not trimmed; callers keep it small.
+ */
+export type DataBlock = { type: string; id: string; title: string; body: string };
+
+export function renderDataBlock(d: DataBlock, nonce: string): string {
+  return renderBlock({ ref: { type: d.type, id: d.id }, title: d.title, head: '', body: d.body, fenced: false }, 0, nonce);
 }
 
 /** Cuts `s` to at most `n` UTF-16 units without splitting a surrogate pair. */

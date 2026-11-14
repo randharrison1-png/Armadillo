@@ -23,6 +23,7 @@ const base = (over: Partial<Requirement> = {}): Requirement => ({
   evidence_report_id: null,
   notes: null,
   suggestion: null,
+  reviewed_at: null,
   created_at: new Date(0),
   updated_at: new Date(0),
   ...over,
@@ -50,6 +51,12 @@ describe('transition (pure state machine)', () => {
     expect(() => transition(base({ coverage: 'missing' }), 'reported')).toThrow(InvalidTransitionError);
     expect(() => transition(base({ coverage: 'detected', script_version_id: null }), 'reported')).toThrow(InvalidTransitionError);
     expect(transition(base(), 'reported')).toMatchObject({ work_state: 'reported', evidence_report_id: null });
+  });
+
+  it('a disruptive covered requirement cannot be reported until it is reviewed', () => {
+    const disruptive = base({ disruptive: true });
+    expect(() => transition(disruptive, 'reported')).toThrow(InvalidTransitionError);
+    expect(transition({ ...disruptive, reviewed_at: new Date(1) }, 'reported')).toMatchObject({ work_state: 'reported' });
   });
 
   it('a manual requirement may go straight to verified, only with evidence', () => {
@@ -95,19 +102,21 @@ const row = (over: Partial<RequirementRow> = {}): RequirementRow => ({
   scriptLabel: null,
   evidenceReportId: null,
   evidenceLabel: null,
+  reviewedAt: null,
   ...over,
 });
 
-function renderMatrix(rows: RequirementRow[], onOpenSource = vi.fn()) {
+function renderMatrix(rows: RequirementRow[], onOpenSource = vi.fn(), onMarkReviewed = vi.fn(async () => ({ ok: true as const, reviewedAt: '2026-11-14T00:00:00Z' }))) {
   render(
     createElement(RequirementsMatrix, {
       rows,
       readOnly: false,
       onOpenSource,
       onSaveNotes: async (_id: string, notes: string) => ({ ok: true as const, notes: notes || null }),
+      onMarkReviewed,
     }),
   );
-  return { onOpenSource };
+  return { onOpenSource, onMarkReviewed };
 }
 
 const bodyRows = () => within(screen.getByRole('table', { name: 'Requirements' })).getAllByRole('row').slice(1);
@@ -129,7 +138,7 @@ describe('requirements matrix', () => {
     const { onOpenSource } = renderMatrix([
       row({ text: 'Remote Desktop must stay disabled', sourceKind: 'page', sourceIndex: 3, segmentId: 'page-3', coverage: 'covered', workState: 'reported', scriptVersionId: 'v', scriptLabel: 'S · v2' }),
       row({ text: 'Guest disabled', coverage: 'covered', workState: 'verified', evidenceReportId: 'rep-1', evidenceLabel: 'leads.txt · cycle 1' }),
-      row({ text: 'Enable the firewall', disruptive: true, coverage: 'needs_review' }),
+      row({ text: 'Enable the firewall', disruptive: true, coverage: 'covered', scriptVersionId: 'v', scriptLabel: 'S · v2' }),
     ]);
     const headers = within(screen.getByRole('table', { name: 'Requirements' }))
       .getAllByRole('columnheader')
@@ -147,6 +156,25 @@ describe('requirements matrix', () => {
     await userEvent.click(within(reported).getByRole('button', { name: /Page 3/ }));
     expect(onOpenSource).toHaveBeenCalledWith(expect.objectContaining({ segmentId: 'page-3', readmeId: 'readme-1' }));
     expect(within(bodyRows()[1]).getByRole('button', { name: /¶ 3/ })).toBeInTheDocument();
+  });
+
+  it('Mark reviewed clears the "Needs review" marker; coverage is unchanged', async () => {
+    const r = row({ text: 'Stop the FTP service', disruptive: true, coverage: 'covered', scriptVersionId: 'v', scriptLabel: 'S · v1' });
+    const { onMarkReviewed } = renderMatrix([r]);
+    const tr = bodyRows()[0];
+    expect(within(tr).getByTestId('disruptive-marker')).toHaveTextContent('Needs review');
+    expect(within(tr).getByText('Covered')).toBeInTheDocument();
+    await userEvent.click(within(tr).getByRole('button', { name: 'Mark reviewed: Stop the FTP service' }));
+    expect(onMarkReviewed).toHaveBeenCalledWith(r.id);
+    expect(await within(bodyRows()[0]).findByText('Disruptive · reviewed')).toBeInTheDocument();
+    expect(within(bodyRows()[0]).queryByTestId('disruptive-marker')).toBeNull();
+    expect(screen.getByTestId('requirements-summary')).toHaveTextContent('Needs review 0');
+  });
+
+  it('a reviewed disruptive row shows no marker', () => {
+    renderMatrix([row({ disruptive: true, reviewedAt: '2026-11-14T00:00:00Z' })]);
+    expect(screen.queryByTestId('disruptive-marker')).toBeNull();
+    expect(screen.getByText('Disruptive · reviewed')).toBeInTheDocument();
   });
 
   it('a verified row without an evidence reference is never shown as Verified', () => {

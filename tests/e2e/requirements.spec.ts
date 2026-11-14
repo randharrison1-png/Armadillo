@@ -121,7 +121,13 @@ test('extract → matrix rows → Source opens the README segment → assess →
   await expect(rowFor(page, 'Disable the guest account').getByText('Covered', { exact: true })).toBeVisible();
   await expect(rowFor(page, 'Remove unauthorized administrators').getByText('Missing', { exact: true })).toBeVisible();
   await expect(rowFor(page, 'Remove unauthorized administrators').getByText(/Remove-LocalGroupMember/)).toBeVisible();
-  await expect(rowFor(page, 'Keep Remote Desktop enabled').getByText('Needs review', { exact: true }).first()).toBeVisible();
+  // Disruptive is a separate flag: the row is Covered and still marked "Needs review" until reviewed.
+  const rdp = rowFor(page, 'Keep Remote Desktop enabled');
+  await expect(rdp.getByText('Covered', { exact: true })).toBeVisible();
+  await expect(rdp.getByTestId('disruptive-marker')).toHaveText(/Needs review/);
+  await rdp.getByRole('button', { name: 'Mark reviewed: Keep Remote Desktop enabled' }).click();
+  await expect(rdp.getByText('Disruptive · reviewed')).toBeVisible();
+  await expect(rdp.getByTestId('disruptive-marker')).toHaveCount(0);
   // Claude's assessment is never verification: every row is still Proposed.
   await expect(matrix(page).getByText('Proposed')).toHaveCount(3);
   await expect(matrix(page).getByText('Verified')).toHaveCount(0);

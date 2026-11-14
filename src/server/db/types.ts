@@ -133,6 +133,8 @@ export type Requirement = Mutable & {
   category: string | null;
   /** Claude's suggested change from the last coverage assessment (0004b). */
   suggestion: string | null;
+  /** When the user explicitly reviewed this (disruptive) requirement (0004b). */
+  reviewed_at: Date | null;
 };
 
 /** proposals — status 'accepted' requires result_version_id. */
