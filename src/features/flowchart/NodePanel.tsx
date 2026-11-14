@@ -9,20 +9,16 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Gated } from '@/components/ui/gated';
 import type { Availability, CycleDecision, DecisionAvailability } from '@/features/reports/remediationRules';
 import { STEP_STATUS_LABEL, type StepKey, type StepStatus } from '@/lib/types';
+import { PointsPanel, SubmitPanel } from '@/features/sessions/CompletionPanels';
+import { EvidencePanel } from '@/features/sessions/EvidencePanel';
+import { ForensicPanel } from '@/features/sessions/ForensicPanel';
 import { decideCycleAction, saveStepNotesAction, setStepStatusAction } from './actions';
 import { STATUS_ICON, STATUS_TEXT_CLASS } from './statusUi';
 import { STEP_LABEL } from './stepMeta';
 import type { ToolRoute } from './toolRoutes';
-import { EVIDENCE_STEPS, NOTE_MAX, type FlowCycle, type FlowEvent, type FlowEvidence, type FlowStep } from './types';
+import { EVIDENCE_STEPS, NOTE_MAX, type FlowCycle, type FlowEvent, type FlowEvidence, type FlowScriptVersion, type FlowStep } from './types';
 
 const STATUSES = Object.keys(STEP_STATUS_LABEL) as StepStatus[];
-const KIND_LABEL: Record<string, string> = { execution_output: 'Execution output', screenshot: 'Screenshot', verification: 'Verification', other: 'Other' };
-const SECTION_NOTE: Record<NonNullable<ToolRoute['inspectorSection']>, string> = {
-  forensic: 'Forensic question tracking is not available yet. Track completion with the status and notes above.',
-  points: 'Recording the final point count is not available yet. Record what you verified in the notes above.',
-  submit: 'Final submission is not available yet. Record what you submitted in the notes above.',
-};
-
 const stamp = (iso: string) => `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(iso))} UTC`;
 
 const OUTCOME_LABEL: Record<FlowCycle['outcome'], string> = { open: 'Open', completed: 'Marked complete', continued: 'Continued to the next cycle' };
@@ -112,6 +108,7 @@ export function DecisionPanel({ sessionId, currentCycle, decision, cycles, onCha
               <li key={c.cycleNo}>
                 <span className="text-text">Cycle {c.cycleNo}</span> · {OUTCOME_LABEL[c.outcome]}
                 {c.reportFilename ? ` · report ${c.reportFilename}` : ''}
+                {c.points !== null ? ` · reported points ${c.points}${c.targetPoints !== null ? ` of ${c.targetPoints}` : ''}` : ''}
               </li>
             ))}
           </ol>
@@ -150,13 +147,18 @@ type Props = {
   events: FlowEvent[];
   route: ToolRoute;
   readOnly: boolean;
+  currentCycle: number;
+  scriptVersions: FlowScriptVersion[];
+  forensic: { total: number; answered: number };
+  points: { points: number | null; target: number | null };
+  completedAt: string | null;
   /** Called after a successful write so the tab reloads its data. */
   onChanged: () => void;
   onOpenTool: (route: ToolRoute) => void;
 };
 
 /** Inspector body for one step: status, notes, evidence, history and the tool action. */
-export function NodePanel({ sessionId, step, state, evidence, events, route, readOnly, onChanged, onOpenTool }: Props) {
+export function NodePanel({ sessionId, step, state, evidence, events, route, readOnly, currentCycle, scriptVersions, forensic, points, completedAt, onChanged, onOpenTool }: Props) {
   const [pending, setPending] = useState<'status' | 'notes' | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
@@ -280,24 +282,13 @@ export function NodePanel({ sessionId, step, state, evidence, events, route, rea
             </Button>
           </Gated>
         </div>
-        {route.inspectorSection ? <p>{SECTION_NOTE[route.inspectorSection]}</p> : null}
       </div>
 
-      <div className="flex flex-col gap-2">
-        <h4 className="font-medium text-text">Evidence</h4>
-        {evidence.length === 0 ? (
-          <p>No evidence yet</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {evidence.map((e) => (
-              <li key={e.id} className="border-b border-border pb-2">
-                <span className="text-text">{KIND_LABEL[e.kind] ?? e.kind}</span> · {stamp(e.createdAt)}
-                {e.note ? <p className="break-words">{e.note}</p> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {route.inspectorSection === 'forensic' ? <ForensicPanel sessionId={sessionId} /> : null}
+      {route.inspectorSection === 'points' ? <PointsPanel sessionId={sessionId} currentCycle={currentCycle} points={points} readOnly={readOnly} onChanged={onChanged} /> : null}
+      {route.inspectorSection === 'submit' ? <SubmitPanel sessionId={sessionId} forensic={forensic} completedAt={completedAt} onChanged={onChanged} /> : null}
+
+      <EvidencePanel sessionId={sessionId} step={step} evidence={evidence} currentCycle={currentCycle} scriptVersions={scriptVersions} readOnly={readOnly} onChanged={onChanged} />
 
       <div className="flex flex-col gap-2">
         <h4 className="font-medium text-text">History</h4>

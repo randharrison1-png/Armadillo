@@ -23,7 +23,8 @@ export async function setStepStatus(input: StepStatusInput): Promise<WorkflowSte
   return withUser(user.id, (tx) => setStepStatusTx(tx, input));
 }
 
-export type StepStatusInput = { sessionId: string; step: StepKey; status: StepStatus; note?: string };
+/** `eventNote`, when given, is what the history event records instead of `note` (which still becomes the step's notes). */
+export type StepStatusInput = { sessionId: string; step: StepKey; status: StepStatus; note?: string; eventNote?: string };
 
 /** setStepStatus inside the caller's transaction (`tx` from withUser), so it commits or rolls back with the caller's own writes. */
 export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<WorkflowStep> {
@@ -48,7 +49,7 @@ export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<W
     await tx`
       insert into public.workflow_step_events (session_id, step, from_status, to_status, cycle_no, note)
       values (${input.sessionId}, ${input.step}::public.step_key, ${step.status}::public.step_status,
-              ${input.status}::public.step_status, ${session.current_cycle}, ${input.note ?? null})`;
+              ${input.status}::public.step_status, ${session.current_cycle}, ${input.eventNote ?? input.note ?? null})`;
     await logActivity(tx, {
       action: 'step.status_changed',
       entityType: 'workflow_step',
@@ -61,8 +62,8 @@ export async function setStepStatusTx(tx: Tx, input: StepStatusInput): Promise<W
 }
 
 /**
- * Evidence exists for `step` in the session's current cycle. Evidence has no cycle column: cycle 1
- * counts everything; later cycles count rows created since the cycle's first step event.
+ * Evidence exists for `step` in the session's current cycle (evidence.cycle_no = the cycle; addEvidence
+ * sets it under the session lock, so evidence of cycle 1 never verifies a step of cycle 2).
  * LEADS steps are also satisfied by a LEADS report of the current cycle (inspect_leads: only a report).
  */
 async function hasEvidence(tx: Tx, sessionId: string, step: StepKey, cycle: number): Promise<boolean> {
@@ -71,15 +72,8 @@ async function hasEvidence(tx: Tx, sessionId: string, step: StepKey, cycle: numb
     if (r) return true;
   }
   if (step === 'inspect_leads') return false;
-  let since: Date | null = null;
-  if (cycle > 1) {
-    const [e] = await tx<{ start: Date | null }[]>`
-      select min(created_at) as start from public.workflow_step_events where session_id = ${sessionId} and cycle_no = ${cycle}`;
-    if (!e?.start) return false;
-    since = e.start;
-  }
   const [row] = await tx`
-    select 1 from public.evidence where session_id = ${sessionId} and step = ${step}::public.step_key
-    ${since ? tx`and created_at >= ${since}` : tx``} limit 1`;
+    select 1 from public.evidence
+    where session_id = ${sessionId} and step = ${step}::public.step_key and cycle_no = ${cycle} limit 1`;
   return !!row;
 }

@@ -11,6 +11,8 @@ import { ErrorState } from '@/components/shell/states/ErrorState';
 import { LoadingState } from '@/components/shell/states/LoadingState';
 import { cn } from '@/lib/utils';
 import { STEP_STATUS_LABEL, type StepKey, type StepStatus, type TabDescriptor } from '@/lib/types';
+import { useForensicSync } from '@/features/sessions/forensicSync';
+import { formatDate } from '@/features/sessions/dates';
 import { loadFlowchart } from './actions';
 import { activeEdgeIds, DECISION_ID, FLOW_GRAPH, type FlowNodeDef } from './graph';
 import { DecisionPanel, NodePanel } from './NodePanel';
@@ -168,6 +170,14 @@ export function FlowchartTab({ namespace: sessionId }: { namespace: string; tab:
     );
   }, [sessionId]);
   useEffect(() => reload(), [reload]);
+  // Forensic questions changed elsewhere (the session inspector's panel): refresh the counts.
+  const forensicVersion = useForensicSync((s) => s.version[sessionId] ?? 0);
+  const seenForensic = useRef(forensicVersion);
+  useEffect(() => {
+    if (seenForensic.current === forensicVersion) return;
+    seenForensic.current = forensicVersion;
+    reload();
+  }, [forensicVersion, reload]);
 
   const ctx = useMemo(
     () =>
@@ -275,6 +285,11 @@ export function FlowchartTab({ namespace: sessionId }: { namespace: string; tab:
             events={ready.events.filter((e) => e.step === step)}
             route={route}
             readOnly={!!readOnly}
+            currentCycle={ready.currentCycle}
+            scriptVersions={ready.scriptVersions}
+            forensic={ready.forensic}
+            points={ready.points}
+            completedAt={ready.completedAt}
             onChanged={onChanged}
             onOpenTool={openTool}
           />
@@ -296,6 +311,7 @@ export function FlowchartTab({ namespace: sessionId }: { namespace: string; tab:
       <SetTabInspector sections={sections} version={`${selected ?? ''}|${revision}`} />
       <div className="shrink-0 border-b border-border px-4 py-2 text-small text-muted">
         Hardening flowchart · Cycle {load.data.currentCycle}. Select a step to see its status, notes, evidence and history in the inspector.
+        {load.data.completedAt ? <span data-testid="completed-note"> Completed {formatDate(load.data.completedAt)}.</span> : null}
       </div>
       <ReactFlowProvider>
         <Canvas nodes={nodes} edges={edges} />

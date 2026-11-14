@@ -187,6 +187,8 @@ export type Evidence = Mutable & {
   storage_path: string | null;
   script_version_id: string | null;
   note: string | null;
+  /** The session's current_cycle when attached (0004e). */
+  cycle_no: number;
 };
 
 /** remediation_cycles — unique (session_id, cycle_no). */
@@ -196,6 +198,9 @@ export type RemediationCycle = Mutable & {
   report_id: string | null;
   proposal_id: string | null;
   outcome: CycleOutcome;
+  /** Self-reported point count and target for the cycle (0004e); numeric, so a string from postgres.js. */
+  points: string | null;
+  target_points: string | null;
 };
 
 /** workflow_steps — unique (session_id, step); 9 rows per session. */

@@ -3,12 +3,33 @@ import type { StepKey, StepStatus } from '@/lib/types';
 import type { CycleOutcome, DecisionAvailability } from '@/features/reports/remediationRules';
 
 export type FlowStep = { step: StepKey; status: StepStatus; notes: string | null; updatedAt: string };
-export type FlowEvidence = { id: string; step: StepKey; kind: string; note: string | null; createdAt: string };
+export type FlowEvidence = {
+  id: string;
+  step: StepKey;
+  kind: string;
+  note: string | null;
+  createdAt: string;
+  /** The audit cycle it was attached in. */
+  cycleNo: number;
+  /** The stored file's name, or null for a note-only row (download: /api/files/evidence/<id>). */
+  filename: string | null;
+  /** "Script name · vN" of the version this output is of. */
+  scriptLabel: string | null;
+};
+/** A script version evidence can be attached to: the session's scripts, newest first. */
+export type FlowScriptVersion = { id: string; label: string };
 export type FlowEvent = { id: string; step: StepKey; fromStatus: StepStatus | null; toStatus: StepStatus; cycleNo: number; note: string | null; createdAt: string };
 
 export type FlowchartData = {
   sessionStatus: 'active' | 'completed';
+  /** ISO time the session was submitted; null while active. */
+  completedAt: string | null;
   currentCycle: number;
+  /** Forensic question counts (the user sets the step status; nothing is automatic). */
+  forensic: { total: number; answered: number };
+  /** Points the user recorded for the current cycle (self-reported; not verification). */
+  points: { points: number | null; target: number | null };
+  scriptVersions: FlowScriptVersion[];
   steps: FlowStep[];
   evidence: FlowEvidence[];
   /** Newest first. */
@@ -32,7 +53,7 @@ export type LatestRemediation = {
   script: { scriptId: string; filename: string } | null;
 };
 
-export type FlowCycle = { cycleNo: number; outcome: CycleOutcome; reportFilename: string | null; updatedAt: string };
+export type FlowCycle = { cycleNo: number; outcome: CycleOutcome; reportFilename: string | null; updatedAt: string; points: number | null; targetPoints: number | null };
 
 export type ActionResult<T = undefined> = ({ ok: true } & (T extends undefined ? object : { value: T })) | { ok: false; error: string };
 

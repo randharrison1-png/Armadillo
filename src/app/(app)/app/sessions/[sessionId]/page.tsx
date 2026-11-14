@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { SetInspector } from '@/components/shell/inspectorStore';
@@ -10,6 +11,9 @@ import { stageLabel } from '@/features/flowchart/stepMeta';
 import { STEP_STATUS_LABEL } from '@/lib/types';
 import { OS_LABEL } from '@/features/sessions/schema';
 import { getSession } from '@/features/sessions/queries';
+import { ForensicPanel } from '@/features/sessions/ForensicPanel';
+import { OpenTabFromLink } from '@/features/sessions/OpenTabFromLink';
+import { formatDate } from '@/features/sessions/dates';
 
 export const metadata: Metadata = { title: 'Session · Armadillo' };
 // Server actions on this page include structured Claude calls (requirements extraction and
@@ -38,6 +42,7 @@ export default async function SessionPage({ params }: Props) {
     ['System', OS_LABEL[session.os]],
     ['Created', `${created} UTC`],
     ['Current stage', stage],
+    ...(session.completed_at ? ([['Completed', formatDate(session.completed_at)]] as [string, string][]) : []),
   ];
 
   return (
@@ -46,6 +51,11 @@ export default async function SessionPage({ params }: Props) {
         <h1 className="truncate text-body font-semibold text-text">{session.title}</h1>
         <span className="shrink-0 text-small text-muted">{OS_LABEL[session.os]}</span>
       </header>
+      {session.completed_at ? (
+        <p data-testid="completed-banner" className="shrink-0 border-b border-border bg-surface px-4 py-2 text-small text-text">
+          Completed {formatDate(session.completed_at)}. This session is read-only; everything stays viewable.
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1">
         <WorkspaceTabs sessionId={session.id} />
       </div>
@@ -79,6 +89,11 @@ export default async function SessionPage({ params }: Props) {
             ),
           },
           {
+            id: 'forensic',
+            title: 'Forensic questions',
+            content: <ForensicPanel sessionId={session.id} />,
+          },
+          {
             id: 'requirements',
             title: 'Requirements',
             content: <RequirementsInspectorSection sessionId={session.id} />,
@@ -86,6 +101,9 @@ export default async function SessionPage({ params }: Props) {
         ]}
       />
       <ReadmeIntakeHost sessionId={session.id} />
+      <Suspense fallback={null}>
+        <OpenTabFromLink sessionId={session.id} />
+      </Suspense>
     </div>
   );
 }

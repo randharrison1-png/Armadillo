@@ -62,10 +62,11 @@ const COLUMNS: ColumnSet = {
   },
   evidence: {
     id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, step: t, kind: t, storage_path: t,
-    script_version_id: t, note: t,
+    script_version_id: t, note: t, cycle_no: t,
   },
   remediation_cycles: {
     id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, cycle_no: t, report_id: t, proposal_id: t, outcome: t,
+    points: t, target_points: t,
   },
   workflow_steps: { id: t, owner_id: t, created_at: t, updated_at: t, session_id: t, step: t, status: t, notes: t },
   workflow_step_events: {
