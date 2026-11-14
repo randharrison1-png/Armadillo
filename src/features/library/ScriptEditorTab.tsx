@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Download, FileQuestion, GitBranch, GitCompare, Info, Save } from 'lucide-react';
+import { AlertTriangle, Download, FileDiff, FileQuestion, GitBranch, GitCompare, Info, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
@@ -17,13 +17,17 @@ import type { Script, ScriptVersion, TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { draftKey, isDirty, useDrafts } from '@/features/workspace/drafts';
 import { getWorkspaceStore } from '@/features/workspace/store';
+import { loadAdaptationOptions } from '@/features/proposals/actions';
+import type { AdaptationOptions } from '@/features/proposals/types';
+import { useProposeAdaptation } from '@/features/proposals/useProposeAdaptation';
+import { useReadmeUi } from '@/features/readme/readmeUi';
 import { OS_LABEL } from '@/features/sessions/schema';
 import { useScriptEditorExtras } from './editorContext';
 import { CATEGORY_LABEL } from './filters';
 import { ScriptDetailsDialog } from './ScriptDetailsDialog';
 import { firstNonCp1252 } from '@/lib/cp1252';
 import { defaultFormat, ENCODING_LABEL, formatLabel } from './scriptMeta';
-import { diffTab, downloadHref, parseScriptResourceId, scriptTab, versionViewTab } from './scriptTabs';
+import { diffTab, downloadHref, isUuid, parseScriptResourceId, scriptTab, versionViewTab } from './scriptTabs';
 import { forkToSessionAction, loadScriptEditor, loadVersion, restoreVersionAction, saveScriptVersionAction } from './versionActions';
 import type { ScriptEditorData, VersionSummary } from './versionTypes';
 import { VersionHistory } from './VersionHistory';
@@ -94,6 +98,23 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
     () => (currentEncoding === 'windows-1252' && draftText !== undefined ? firstNonCp1252(draftText) : null),
     [currentEncoding, draftText],
   );
+
+  // In a session workspace (namespace = session id) with a README, Claude can propose an adaptation.
+  const sessionId = isUuid(namespace) ? namespace : null;
+  const readmeVersion = useReadmeUi((s) => (sessionId ? (s.version[sessionId] ?? 0) : 0));
+  const [adaptation, setAdaptation] = useState<AdaptationOptions | null>(null);
+  const proposer = useProposeAdaptation(sessionId ?? '');
+  useEffect(() => {
+    if (!sessionId) return;
+    let live = true;
+    loadAdaptationOptions(sessionId).then(
+      (o) => live && setAdaptation(o),
+      () => live && setAdaptation(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [sessionId, readmeVersion]);
 
   const reload = useCallback(async () => {
     try {
@@ -206,6 +227,12 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
   };
 
   const mixedAs = draft?.pristine.includes('\r\n') ? 'CRLF' : 'LF';
+  const adaptReadme = adaptation?.active ? adaptation.readmes.find((r) => r.hasText) : undefined;
+  const propose = async () => {
+    if (!adaptReadme) return;
+    const error = await proposer.run({ scriptVersionId: current.id, readmeId: adaptReadme.id });
+    if (error) toast.error(error);
+  };
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -229,6 +256,18 @@ function ScriptEditor({ namespace, tabKey, scriptId }: { namespace: string; tabK
                 <Download aria-hidden className="size-4" />
                 Download
               </a>
+              {adaptReadme && !readOnly ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => void propose()}
+                  loading={proposer.running}
+                  disabled={dirty || proposer.running}
+                  title={dirty ? 'Save or discard your edits first: Claude adapts the saved version.' : `Claude adapts saved v${current.version_no} to the latest README`}
+                >
+                  <FileDiff aria-hidden className="size-4" />
+                  Propose adaptation
+                </Button>
+              ) : null}
               {extras.forkTargets && script.session_id === null ? (
                 <ForkMenu version={current} script={script} sessions={extras.forkTargets} />
               ) : null}

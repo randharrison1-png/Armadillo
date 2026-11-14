@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useState } from 'react';
-import { ListChecks, ScanSearch, Sparkles, X } from 'lucide-react';
+import { FileDiff, ListChecks, ScanSearch, Sparkles, X } from 'lucide-react';
 import { EmptyState } from '@/components/shell/states/EmptyState';
 import { ErrorState } from '@/components/shell/states/ErrorState';
 import { LoadingState } from '@/components/shell/states/LoadingState';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { fieldClass } from '@/components/ui/input';
 import { openSegment, useReadmeUi } from '@/features/readme/readmeUi';
+import { useProposeAdaptation } from '@/features/proposals/useProposeAdaptation';
 import type { TabDescriptor } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { assessCoverageAction, extractRequirementsAction, loadRequirementsView, markRequirementReviewed, saveRequirementNotes } from './actions';
@@ -35,6 +36,8 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
   const [banner, setBanner] = useState<Banner | null>(null);
   const [extractOpen, setExtractOpen] = useState(false);
   const [assessOpen, setAssessOpen] = useState(false);
+  const [proposeOpen, setProposeOpen] = useState(false);
+  const proposer = useProposeAdaptation(sessionId);
   const readmeVersion = useReadmeUi((s) => s.version[sessionId] ?? 0);
 
   const reload = useCallback(() => setAttempt((a) => a + 1), []);
@@ -93,6 +96,15 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
     reload();
   };
 
+  const runPropose = async (input: { readmeId: string; scriptVersionId: string }) => {
+    setProposeOpen(false);
+    setBanner(null);
+    const error = await proposer.run(input);
+    if (error) setBanner({ kind: 'error', lines: [error] });
+  };
+  const busy = running !== null || proposer.running;
+  const textReadmes = view.readmes.filter((r) => r.hasText);
+
   const onExtract = () => {
     if (!latest) return;
     const existing = rows.some((r) => r.readmeId === latest.id);
@@ -109,13 +121,23 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
 
   const actions = completed ? null : (
     <div className="flex flex-wrap items-center gap-2">
-      <Button onClick={onExtract} loading={running === 'extract'} disabled={!latest || running !== null}>
+      <Button onClick={onExtract} loading={running === 'extract'} disabled={!latest || busy}>
         <Sparkles aria-hidden className="size-4" />
         Extract requirements
       </Button>
-      <Button variant="secondary" onClick={() => setAssessOpen(true)} loading={running === 'assess'} disabled={proposed === 0 || running !== null}>
+      <Button variant="secondary" onClick={() => setAssessOpen(true)} loading={running === 'assess'} disabled={proposed === 0 || busy}>
         <ScanSearch aria-hidden className="size-4" />
         Assess coverage
+      </Button>
+      <Button
+        variant="secondary"
+        onClick={() => setProposeOpen(true)}
+        loading={proposer.running}
+        disabled={textReadmes.length === 0 || view.scriptOptions.length === 0 || busy}
+        title={textReadmes.length === 0 ? 'Add a README with text first' : view.scriptOptions.length === 0 ? 'Add a script first' : undefined}
+      >
+        <FileDiff aria-hidden className="size-4" />
+        Propose adaptation
       </Button>
     </div>
   );
@@ -133,9 +155,13 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
       </header>
 
       {completed ? <p className="text-small text-muted">This session is completed; its requirements are read-only.</p> : null}
-      {running ? (
+      {running || proposer.running ? (
         <p role="status" className="text-small text-muted">
-          {running === 'extract' ? 'Claude is reading the README…' : 'Claude is comparing the script with the requirements…'}
+          {running === 'extract'
+            ? 'Claude is reading the README…'
+            : running === 'assess'
+              ? 'Claude is comparing the script with the requirements…'
+              : 'Claude is adapting the script to the README. This can take a minute…'}
         </p>
       ) : null}
       {banner ? (
@@ -177,6 +203,7 @@ export function RequirementsTab({ namespace: sessionId }: { namespace: string; t
 
       <ExtractDialog open={extractOpen} onOpenChange={setExtractOpen} view={view} onConfirm={runExtract} />
       <AssessDialog open={assessOpen} onOpenChange={setAssessOpen} view={view} onConfirm={runAssess} />
+      <ProposeDialog open={proposeOpen} onOpenChange={setProposeOpen} view={view} onConfirm={runPropose} />
     </section>
   );
 }
@@ -281,6 +308,102 @@ function AssessDialog({ open, onOpenChange, view, onConfirm }: { open: boolean; 
           </Button>
           <Button disabled={!versionId} onClick={() => onConfirm(versionId)}>
             Assess coverage
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The script version most requirements were last assessed against (the default to adapt). */
+function assessedVersion(view: RequirementsView): string {
+  const counts = new Map<string, number>();
+  for (const r of view.requirements) if (r.scriptVersionId) counts.set(r.scriptVersionId, (counts.get(r.scriptVersionId) ?? 0) + 1);
+  let best = '';
+  for (const [id, n] of counts) if (view.scriptOptions.some((o) => o.id === id) && n > (counts.get(best) ?? 0)) best = id;
+  return best;
+}
+
+function ProposeDialog({
+  open,
+  onOpenChange,
+  view,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  view: RequirementsView;
+  onConfirm: (input: { readmeId: string; scriptVersionId: string }) => void;
+}) {
+  const id = useId();
+  const readmes = view.readmes.filter((r) => r.hasText);
+  const [readmeChoice, setReadmeChoice] = useState('');
+  const [scriptChoice, setScriptChoice] = useState<string | null>(null);
+  const readmeId = readmes.some((r) => r.id === readmeChoice) ? readmeChoice : (readmes[0]?.id ?? '');
+  const options = view.scriptOptions;
+  const versionId = scriptChoice !== null && options.some((o) => o.id === scriptChoice) ? scriptChoice : assessedVersion(view);
+  const session = options.filter((o) => o.scope === 'session');
+  const library = options.filter((o) => o.scope === 'library');
+  const chosen = options.find((o) => o.id === versionId);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Propose adaptation</DialogTitle>
+          <DialogDescription>
+            Claude rewrites the chosen script for the README and lists every high-impact change. You review the diff and acknowledge each flagged line before anything is saved.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-4">
+          {readmes.length > 1 ? (
+            <div className="flex flex-col gap-1 text-small text-muted">
+              <label htmlFor={`${id}-readme`}>README</label>
+              <select id={`${id}-readme`} className={cn(fieldClass, 'h-control')} value={readmeId} onChange={(e) => setReadmeChoice(e.target.value)}>
+                {readmes.map((r, i) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                    {i === 0 ? ' · latest' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-1 text-small text-muted">
+            <label htmlFor={`${id}-script`}>Script version</label>
+            <select id={`${id}-script`} className={cn(fieldClass, 'h-control')} value={versionId} onChange={(e) => setScriptChoice(e.target.value)}>
+              <option value="" disabled>
+                Choose a script version
+              </option>
+              {session.length ? (
+                <optgroup label="Session scripts">
+                  {session.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {library.length ? (
+                <optgroup label="Library scripts">
+                  {library.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </select>
+          </div>
+          {chosen?.scope === 'library' ? (
+            <p className="text-small text-muted">This is a library script. Accepting saves a session copy; the library script itself never changes.</p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button disabled={!versionId || !readmeId} onClick={() => onConfirm({ readmeId, scriptVersionId: versionId })}>
+            Propose adaptation
           </Button>
         </DialogFooter>
       </DialogContent>

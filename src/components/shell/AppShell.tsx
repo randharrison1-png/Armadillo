@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { PanelRight } from 'lucide-react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Inspector } from '@/components/shell/Inspector';
@@ -16,7 +16,9 @@ type Props = {
 
 export function AppShell({ userEmail, sessions, libraryCounts, children }: Props) {
   const open = useInspectorStore((s) => s.open);
-  const sections = useInspectorStore((s) => s.sections);
+  const pageSections = useInspectorStore((s) => s.sections);
+  const tabSections = useInspectorStore((s) => s.tabSections);
+  const sections = useMemo(() => [...tabSections, ...pageSections], [tabSections, pageSections]);
   const toggle = useInspectorStore((s) => s.toggle);
   return (
     <div className="flex h-screen bg-bg text-text">

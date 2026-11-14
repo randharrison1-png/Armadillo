@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { DiffEditor, Editor, type OnMount } from '@monaco-editor/react';
+import { useEffect, useRef, useState } from 'react';
+import { DiffEditor, Editor, type DiffOnMount, type OnMount } from '@monaco-editor/react';
 import { LoadingState } from '@/components/shell/states/LoadingState';
 import type { LineEnding } from '@/server/db/types';
 import type { ScriptLanguage } from '@/lib/types';
 import { MONACO_LANGUAGE, monaco } from './setup';
+
+export type ModifiedEditor = monaco.editor.ICodeEditor;
 
 /*
  * Monaco wrappers. Load this module with next/dynamic({ ssr: false }) only: importing it pulls in
@@ -94,6 +96,70 @@ export function CodeDiff({ original, modified, language, ariaLabel }: DiffProps)
         ariaLabel,
         originalAriaLabel: `${ariaLabel}, older version`,
         modifiedAriaLabel: `${ariaLabel}, newer version`,
+      }}
+    />
+  );
+}
+
+type ReviewDiffProps = {
+  /** Left side, never editable. */
+  original: string;
+  /** Right side's starting text. Read once at mount: later changes to this prop are ignored (remount with a new `key` to reset). */
+  modified: string;
+  language: ScriptLanguage;
+  lineEnding: LineEnding;
+  ariaLabel: string;
+  /** Right side read-only too (decided proposals, completed sessions). */
+  readOnly?: boolean;
+  onChange?: (value: string) => void;
+  /** Called once after mount with the right side's text as the editor holds it (EOL applied). */
+  onReady?: (value: string) => void;
+  /** The right-hand editor, for "go to line". Called with null on unmount. */
+  onModifiedEditor?: (editor: ModifiedEditor | null) => void;
+};
+
+/**
+ * Side-by-side review of a proposed script: original on the left (read-only), the proposal on the
+ * right, editable unless `readOnly`. Both models get the base version's line ending, like CodeEditor.
+ */
+export function ReviewDiff({ original, modified, language, lineEnding, ariaLabel, readOnly = false, onChange, onReady, onModifiedEditor }: ReviewDiffProps) {
+  const handlers = useRef({ onChange, onReady, onModifiedEditor });
+  useEffect(() => {
+    handlers.current = { onChange, onReady, onModifiedEditor };
+  });
+  const [initial] = useState(modified);
+  useEffect(() => () => handlers.current.onModifiedEditor?.(null), []);
+
+  const onMount: DiffOnMount = (editor, m) => {
+    const eol = lineEnding === 'crlf' ? m.editor.EndOfLineSequence.CRLF : m.editor.EndOfLineSequence.LF;
+    const right = editor.getModifiedEditor();
+    if (lineEnding !== 'mixed') {
+      editor.getOriginalEditor().getModel()?.setEOL(eol);
+      right.getModel()?.setEOL(eol);
+    }
+    right.onDidChangeModelContent(() => handlers.current.onChange?.(right.getValue()));
+    handlers.current.onReady?.(right.getValue());
+    handlers.current.onModifiedEditor?.(right);
+  };
+
+  return (
+    <DiffEditor
+      original={original}
+      modified={initial}
+      language={MONACO_LANGUAGE[language]}
+      theme="armadillo"
+      loading={loading}
+      onMount={onMount}
+      options={{
+        ...BASE_OPTIONS,
+        readOnly,
+        domReadOnly: readOnly,
+        originalEditable: false,
+        renderSideBySide: true,
+        ignoreTrimWhitespace: false,
+        ariaLabel,
+        originalAriaLabel: `${ariaLabel}, current version`,
+        modifiedAriaLabel: `${ariaLabel}, proposed version${readOnly ? '' : ' (editable)'}`,
       }}
     />
   );

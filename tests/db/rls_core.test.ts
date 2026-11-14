@@ -99,8 +99,14 @@ describe('core schema: RLS isolation (every private table)', () => {
 
       if (!isInsertOnly(table)) {
         it("an owner cannot move their row to another user's owner_id", async () => {
-          const id = graphRowId[table](b);
-          const err = await pgError(asUser(b.owner, (tx) => tx`update ${tx(table)} set owner_id = ${a.owner} where id = ${id}`));
+          const err = await pgError(
+            asUser(b.owner, async (tx) => {
+              // The graph's proposal is accepted, and decided proposals cannot be updated at all
+              // (0004c); move a fresh pending one so the RLS check itself is what refuses.
+              const id = table === 'proposals' ? await insertRow(tx, table, factories[table](b)) : graphRowId[table](b);
+              return tx`update ${tx(table)} set owner_id = ${a.owner} where id = ${id}`;
+            }),
+          );
           expect(err.message).toMatch(RLS_VIOLATION);
         });
       }

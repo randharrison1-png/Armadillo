@@ -163,39 +163,45 @@ async function insertNext(tx: Tx, script: Script, base: ScriptVersion | null, v:
  * Claude's edits go to a session fork (forkToSession).
  */
 export function saveScriptVersionFor(userId: string, input: SaveInput): Promise<SaveResult> {
-  return withUser(userId, async (tx) => {
-    const script = await lockScript(tx, input.scriptId);
-    if (input.author === 'claude' && script.session_id === null) {
-      throw new ForbiddenEditError('Claude cannot change a universal script. Fork it into a session first.');
-    }
-    const current = await versionById(tx, script.current_version_id);
-    if ((input.baseVersionId ?? null) !== (script.current_version_id ?? null)) {
-      if (current) return { status: 'conflict', latest: current };
-      throw new NotFoundError('Version');
-    }
-    const defaults = defaultFormat(script.filename);
-    const lineEnding0 = current?.line_ending ?? defaults.lineEnding;
-    const content = normalizeForLineEnding(input.content, lineEnding0);
-    if (tooLarge(content)) throw new ContentTooLargeError();
-    const sha256 = sha256Hex(content);
-    if (current && current.sha256 === sha256) return { status: 'unchanged', version: current };
-    // An ANSI file that gains characters Windows-1252 cannot store (→, emoji, CJK, …) is written as
-    // UTF-8 from this version on — BOM for .ps1 so Windows PowerShell 5.1 reads it as UTF-8, none for
-    // .bat/.cmd (cmd.exe would run the BOM as part of the first command) — instead of losing text.
-    let encoding: TextEncoding = current?.encoding ?? defaults.encoding;
-    const encodingChangedFrom = encoding === 'windows-1252' && !cp1252Encodable(content) ? encoding : null;
-    if (encodingChangedFrom) encoding = defaults.encoding;
-    const version = await insertNext(tx, script, current, {
-      content,
-      sha256,
-      encoding,
-      line_ending: lineEnding0 === 'mixed' ? lineEndingOf(content) : lineEnding0,
-      language: current?.language ?? languageFor(script.filename),
-      author: input.author,
-      change_note: input.changeNote?.trim() || null,
-    }, 'script.version.create', encodingChangedFrom ? { encodingChangedFrom } : {});
-    return { status: 'created', version };
-  });
+  return withUser(userId, (tx) => saveScriptVersionTx(tx, input));
+}
+
+/**
+ * saveScriptVersionFor inside the caller's withUser transaction (e.g. acceptProposal, which forks,
+ * saves and marks the proposal accepted atomically). Same rules; `tx` must come from withUser.
+ */
+export async function saveScriptVersionTx(tx: Tx, input: SaveInput): Promise<SaveResult> {
+  const script = await lockScript(tx, input.scriptId);
+  if (input.author === 'claude' && script.session_id === null) {
+    throw new ForbiddenEditError('Claude cannot change a universal script. Fork it into a session first.');
+  }
+  const current = await versionById(tx, script.current_version_id);
+  if ((input.baseVersionId ?? null) !== (script.current_version_id ?? null)) {
+    if (current) return { status: 'conflict', latest: current };
+    throw new NotFoundError('Version');
+  }
+  const defaults = defaultFormat(script.filename);
+  const lineEnding0 = current?.line_ending ?? defaults.lineEnding;
+  const content = normalizeForLineEnding(input.content, lineEnding0);
+  if (tooLarge(content)) throw new ContentTooLargeError();
+  const sha256 = sha256Hex(content);
+  if (current && current.sha256 === sha256) return { status: 'unchanged', version: current };
+  // An ANSI file that gains characters Windows-1252 cannot store (→, emoji, CJK, …) is written as
+  // UTF-8 from this version on — BOM for .ps1 so Windows PowerShell 5.1 reads it as UTF-8, none for
+  // .bat/.cmd (cmd.exe would run the BOM as part of the first command) — instead of losing text.
+  let encoding: TextEncoding = current?.encoding ?? defaults.encoding;
+  const encodingChangedFrom = encoding === 'windows-1252' && !cp1252Encodable(content) ? encoding : null;
+  if (encodingChangedFrom) encoding = defaults.encoding;
+  const version = await insertNext(tx, script, current, {
+    content,
+    sha256,
+    encoding,
+    line_ending: lineEnding0 === 'mixed' ? lineEndingOf(content) : lineEnding0,
+    language: current?.language ?? languageFor(script.filename),
+    author: input.author,
+    change_note: input.changeNote?.trim() || null,
+  }, 'script.version.create', encodingChangedFrom ? { encodingChangedFrom } : {});
+  return { status: 'created', version };
 }
 
 /**
@@ -234,31 +240,34 @@ export function restoreVersionFor(
  * sha256. The source script is not touched.
  */
 export function forkToSessionFor(userId: string, input: { versionId: string; sessionId: string }): Promise<Script> {
-  return withUser(userId, async (tx) => {
-    const [session] = UUID_RE.test(input.sessionId)
-      ? await tx<{ id: string; status: string }[]>`select id, status from public.sessions where id = ${input.sessionId}`
-      : [];
-    if (!session) throw new NotFoundError('Session');
-    if (session.status !== 'active') throw new ForbiddenEditError('That session is completed and read-only.');
-    const source = await versionById(tx, input.versionId);
-    const [src] = source ? await tx<Script[]>`select * from public.scripts where id = ${source.script_id}` : [];
-    if (!source || !src) throw new NotFoundError('Version');
-    return insertScriptWithV1(tx, {
-      name: src.name,
-      filename: src.filename,
-      category: src.category,
-      fn: 'session_generated',
-      description: src.description,
-      osCompat: src.os_compat,
-      content: source.content,
-      format: { encoding: source.encoding, lineEnding: source.line_ending },
-      language: source.language,
-      sha256: source.sha256,
-      sessionId: session.id,
-      forkedFromVersionId: source.id,
-      changeNote: `Forked from ${src.name} v${source.version_no}`,
-      activity: { action: 'script.fork', meta: { sourceScriptId: src.id, sourceVersionId: source.id } },
-    });
+  return withUser(userId, (tx) => forkToSessionTx(tx, input));
+}
+
+/** forkToSessionFor inside the caller's withUser transaction. */
+export async function forkToSessionTx(tx: Tx, input: { versionId: string; sessionId: string }): Promise<Script> {
+  const [session] = UUID_RE.test(input.sessionId)
+    ? await tx<{ id: string; status: string }[]>`select id, status from public.sessions where id = ${input.sessionId}`
+    : [];
+  if (!session) throw new NotFoundError('Session');
+  if (session.status !== 'active') throw new ForbiddenEditError('That session is completed and read-only.');
+  const source = await versionById(tx, input.versionId);
+  const [src] = source ? await tx<Script[]>`select * from public.scripts where id = ${source.script_id}` : [];
+  if (!source || !src) throw new NotFoundError('Version');
+  return insertScriptWithV1(tx, {
+    name: src.name,
+    filename: src.filename,
+    category: src.category,
+    fn: 'session_generated',
+    description: src.description,
+    osCompat: src.os_compat,
+    content: source.content,
+    format: { encoding: source.encoding, lineEnding: source.line_ending },
+    language: source.language,
+    sha256: source.sha256,
+    sessionId: session.id,
+    forkedFromVersionId: source.id,
+    changeNote: `Forked from ${src.name} v${source.version_no}`,
+    activity: { action: 'script.fork', meta: { sourceScriptId: src.id, sourceVersionId: source.id } },
   });
 }
 

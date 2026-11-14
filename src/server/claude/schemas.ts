@@ -125,3 +125,57 @@ export type AssessmentItem = z.infer<typeof AssessmentItemSchema>;
 
 export const AssessmentSchema = z.object({ assessments: z.array(AssessmentItemSchema).max(MAX_EXTRACTED) });
 export type Assessment = z.infer<typeof AssessmentSchema>;
+
+// ------------------------------------------------------------------------------------------------
+// Script adaptation (Task 14)
+// ------------------------------------------------------------------------------------------------
+
+/** Categories Claude may give a flag (HighImpactCategory). */
+export const FLAG_CATEGORIES = ['accounts', 'services', 'firewall', 'remote_access', 'other'] as const;
+export const MAX_ADAPT_FLAGS = 300;
+export const ADAPT_SUMMARY_MAX = 4000;
+export const FLAG_REASON_MAX = 500;
+
+export const ADAPT_TOOL: ClaudeTool = {
+  name: 'record_adaptation',
+  description:
+    'Records the adapted script (complete), a summary of the changes, and every high-impact line of the adapted script. Call it exactly once. It only records your answer; nothing is saved until the user reviews and accepts it.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      content: {
+        type: 'string',
+        description: 'The COMPLETE adapted script, every line, ready to save as the file. Not a diff or an excerpt; no Markdown code fences around it.',
+      },
+      summary: {
+        type: 'string',
+        description: 'First line: what changed, in one short sentence (it becomes the change note). Then any detail a reviewer needs, including README requirements left for a person to do.',
+      },
+      flags: {
+        type: 'array',
+        maxItems: MAX_ADAPT_FLAGS,
+        items: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', enum: [...FLAG_CATEGORIES] },
+            line: { type: 'integer', minimum: 1, description: '1-based line number in the adapted script (content).' },
+            reason: { type: 'string', description: 'What the line could break or who it could lock out, briefly.' },
+          },
+          required: ['category', 'line', 'reason'],
+        },
+      },
+    },
+    required: ['content', 'summary', 'flags'],
+  },
+};
+
+const clipped = (max: number) => z.string().transform((s) => s.trim().slice(0, max));
+
+export const AdaptationSchema = z.object({
+  content: z.string().min(1),
+  summary: clipped(ADAPT_SUMMARY_MAX).pipe(z.string().min(1)),
+  // `line` is not required to be an integer inside the file here: wrong lines are dropped and
+  // counted by the caller (resolveClaudeFlags), not retried.
+  flags: z.array(z.object({ category: z.enum(FLAG_CATEGORIES), line: z.number(), reason: clipped(FLAG_REASON_MAX) })).max(MAX_ADAPT_FLAGS),
+});
+export type Adaptation = z.infer<typeof AdaptationSchema>;

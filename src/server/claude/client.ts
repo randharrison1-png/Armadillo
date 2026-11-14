@@ -210,6 +210,18 @@ export class StructuredOutputError extends Error {
   }
 }
 
+/**
+ * A resource that must reach Claude whole (e.g. the script an adaptation rewrites in full) would be
+ * trimmed to fit the context budget. Raised before any request is sent. Message is user-facing.
+ */
+export class ContextTooLargeError extends Error {
+  readonly name = 'ContextTooLargeError';
+  readonly code = 'context_too_large';
+  constructor(readonly refs: ResourceRef[]) {
+    super('The selected documents are too long to send to Claude in one request.');
+  }
+}
+
 type Attempt = { ok: true; data: unknown } | { ok: false; issues: string };
 
 function checkToolAnswer<T>(message: Anthropic.Message, tool: ClaudeTool, schema: ZodType<T>): { attempt: Attempt; toolUse: Anthropic.ToolUseBlock | null } {
@@ -298,6 +310,8 @@ export type ClaudeToolInput<T> = {
   tool: ClaudeTool;
   schema: ZodType<T>;
   maxTokens?: number;
+  /** Refs that must not be trimmed to fit the budget: if one would be, ContextTooLargeError (no request). */
+  untrimmable?: ResourceRef[];
 };
 
 export type ClaudeToolResult<T> = { data: T; nonce: string; trimmed: ResourceRef[]; model: string; usage: Usage; attempts: number };
@@ -306,8 +320,8 @@ export type ClaudeToolResult<T> = { data: T; nonce: string; trimmed: ResourceRef
  * A structured Claude call for a session: assembles the context from `refs` exactly like chat
  * (ownership and session scope enforced, untrusted documents wrapped with a per-request nonce),
  * resolves the key (BYO, else server) and model, and runs one forced tool call with one validation
- * retry (runToolCall). Throws ForbiddenError, ClaudeKeyMissingError / ClaudeKeyUnreadableError,
- * ClaudeUpstreamError or StructuredOutputError.
+ * retry (runToolCall). Throws ForbiddenError, ContextTooLargeError (an `untrimmable` ref did not fit),
+ * ClaudeKeyMissingError / ClaudeKeyUnreadableError, ClaudeUpstreamError or StructuredOutputError.
  */
 export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<ClaudeToolResult<T>> {
   const ctx = await buildContext({
@@ -317,6 +331,8 @@ export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<Clau
     budgetTokens: numberEnv('CLAUDE_CONTEXT_TOKENS', DEFAULT_CONTEXT_TOKENS),
     structuredTool: input.tool.name,
   });
+  const whole = (input.untrimmable ?? []).filter((r) => ctx.trimmed.some((t) => t.type === r.type && t.id === r.id));
+  if (whole.length) throw new ContextTooLargeError(whole);
   const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
   const documents = [ctx.documents, ...(input.data ?? []).map((d) => renderDataBlock(d, ctx.nonce))].filter(Boolean).join('\n\n');
   const content = [...(documents ? [{ type: 'text' as const, text: documents }] : []), { type: 'text' as const, text: input.instruction(ctx.nonce) }];

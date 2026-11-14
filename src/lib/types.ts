@@ -27,6 +27,8 @@ export type TabDescriptor = { key: string; kind: TabKind; title: string; resourc
 export type HighImpactCategory = 'accounts' | 'services' | 'firewall' | 'remote_access' | 'other';
 export type HighImpactFlag = {
   id: string; category: HighImpactCategory; line: number; match: string; source: 'scanner' | 'claude';
+  /** Why it is high-impact: the scanner rule's description, or Claude's reason (Task 14). Optional. */
+  reason?: string;
 };
 
 export type Segment = { id: string; kind: 'paragraph' | 'page'; index: number; text: string };

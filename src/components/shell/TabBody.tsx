@@ -37,6 +37,10 @@ const VersionDiffTab = dynamic(() => import('@/features/library/VersionDiffTab')
   ssr: false,
   loading: () => <LoadingState label="Loading comparison" />,
 });
+const ProposalDiffTab = dynamic(() => import('@/features/proposals/ProposalDiffTab').then((m) => m.ProposalDiffTab), {
+  ssr: false,
+  loading: () => <LoadingState label="Loading proposal" />,
+});
 
 /**
  * Body per tab kind. `namespace` is the workspace the tab lives in (a session id, or
@@ -53,7 +57,10 @@ export function TabBody({ tab, namespace }: { tab: TabDescriptor; namespace: str
         <EmptyState icon={TAB_ICONS.script} title={tab.title} description="Nothing here yet." />
       );
     case 'diff':
-      return tab.resourceId ? (
+      // resourceId `proposal:<id>`: a Claude proposal under review; otherwise two versions (scriptTabs.ts).
+      return tab.resourceId?.startsWith('proposal:') ? (
+        <ProposalDiffTab tab={tab} namespace={namespace} />
+      ) : tab.resourceId ? (
         <VersionDiffTab tab={tab} />
       ) : (
         <EmptyState icon={TAB_ICONS.diff} title={tab.title} description="Nothing here yet." />

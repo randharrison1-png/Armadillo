@@ -1,0 +1,4 @@
+@echo off
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 1 /f
+winrm quickconfig -q
+sc config TermService start= disabled

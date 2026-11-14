@@ -148,6 +148,8 @@ export type Proposal = Mutable & {
   flags: HighImpactFlag[];
   status: ProposalStatus;
   result_version_id: string | null;
+  /** The README an adaptation was written for (0004c); null for remediation proposals. */
+  readme_id: string | null;
 };
 
 export type LeadsReport = Mutable & {
