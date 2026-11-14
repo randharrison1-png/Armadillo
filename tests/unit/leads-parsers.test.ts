@@ -66,7 +66,7 @@ describe('parseLeadsReport', () => {
     ]);
     // 1-based line numbers into the raw text.
     expect(r.findings[0]!.rawLine).toBe(5);
-    expect(text('plain-markers.txt').split('\n')[r.findings[3]!.rawLine - 1]).toContain('Remote Desktop');
+    expect(text('plain-markers.txt').split('\n')[r.findings[3]!.rawLine! - 1]).toContain('Remote Desktop');
   });
 
   it('generic parser groups by severity when present', () => {
@@ -130,8 +130,36 @@ describe('parseLeadsReport', () => {
     ]);
     // rawLine points into the pretty-printed raw text.
     const lines = raw.split('\n');
-    expect(lines[r.findings[1]!.rawLine - 1]).toBe('  {');
-    expect(lines[r.findings[1]!.rawLine]).toContain('Remote Desktop enabled');
+    expect(lines[r.findings[1]!.rawLine! - 1]).toBe('  {');
+    expect(lines[r.findings[1]!.rawLine!]).toContain('Remote Desktop enabled');
+  });
+
+  it('an item that is not in canonical form gets rawLine null; later items still map', () => {
+    const raw = [
+      '[',
+      '  {',
+      '    "title": "A",',
+      '    "status": "pass"',
+      '  },',
+      '  {',
+      '    "title": "B\\u0021",',
+      '    "status": "fail"',
+      '  },',
+      '  {',
+      '    "title": "C",',
+      '    "status": "pass"',
+      '  }',
+      ']',
+    ].join('\n');
+    const r = parseLeadsReport(raw);
+    expect(r.findings.map((f) => [f.title, f.rawLine])).toEqual([['A', 2], ['B!', null], ['C', 10]]);
+    const lines = raw.split('\n');
+    for (const f of r.findings) if (f.rawLine !== null) expect(lines[f.rawLine - 1]).toBe('  {');
+  });
+
+  it('minified JSON: rawLine is null or correct, never a made-up 1', () => {
+    const r = parseLeadsReport('[{"title":"A","status":"pass"},{"title":"B","status":"fail"}]');
+    expect(r.findings.map((f) => f.rawLine)).toEqual([null, null]);
   });
 
   it('JSON that does not look like findings stays raw', () => {
@@ -238,6 +266,13 @@ describe('performance regressions (adversarial 20 MB-class inputs)', () => {
     expect(r.parser).toBe('json');
     expect(r.findings).toHaveLength(5000);
     expect(r.truncated).toBe(true);
+    expect(r.findings.every((f) => f.rawLine === null || f.rawLine === 1)).toBe(true); // single-line file: 1 is the true line
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it('extractScore: whitespace-run lines at 25 MB stay linear', () => {
+    const raw = Array.from({ length: 12_500 }, () => `1${' '.repeat(1990)}/${' '.repeat(5)}x`).join('\n');
+    const [, ms] = time(() => extractScore(raw));
     expect(ms).toBeLessThan(2000);
   });
 

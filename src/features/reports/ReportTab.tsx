@@ -299,7 +299,7 @@ const FindingRow = memo(function FindingRow({ finding: f }: { finding: ReportFin
       <td className="whitespace-nowrap px-2 py-2 text-text">{f.severity ? f.severity[0]!.toUpperCase() + f.severity.slice(1) : <span className="text-muted">None</span>}</td>
       <td className="px-2 py-2 text-muted">{f.category ?? ''}</td>
       <td className="break-words px-2 py-2 text-text">{f.title}</td>
-      <td className="whitespace-nowrap px-2 py-2 text-muted">{f.rawLine}</td>
+      <td className="whitespace-nowrap px-2 py-2 text-muted">{f.rawLine ?? '—'}</td>
     </tr>
   );
 });

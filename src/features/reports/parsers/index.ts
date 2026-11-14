@@ -29,7 +29,7 @@ function normalize(r: ParsedReport): ParsedReport {
       status: f.status,
       ...(f.severity ? { severity: String(f.severity).slice(0, 40) } : {}),
       ...(f.category ? { category: clampTitle(String(f.category)) } : {}),
-      rawLine: Number.isInteger(f.rawLine) && f.rawLine >= 1 ? f.rawLine : 1,
+      rawLine: f.rawLine !== null && Number.isInteger(f.rawLine) && f.rawLine >= 1 ? f.rawLine : null,
     });
   }
   const score = typeof r.score === 'number' && Number.isFinite(r.score) ? r.score : null;

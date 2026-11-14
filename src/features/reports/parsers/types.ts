@@ -1,12 +1,12 @@
 export type FindingStatus = 'pass' | 'fail' | 'unknown';
 
-/** One audit finding. `rawLine` is the 1-based line of the finding in the report's raw text. */
+/** One audit finding. `rawLine` is the 1-based line of the finding in the report's raw text, or null when it could not be located. */
 export type Finding = {
   title: string;
   status: FindingStatus;
   severity?: string;
   category?: string;
-  rawLine: number;
+  rawLine: number | null;
 };
 
 export type ParsedReport = {

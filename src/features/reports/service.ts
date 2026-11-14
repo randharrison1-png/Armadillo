@@ -123,7 +123,8 @@ export async function recordLeadsReportFor(userId: string, input: { sessionId: s
         status: f.status,
         severity: f.severity ?? null,
         category: f.category ?? null,
-        raw_line: f.rawLine,
+        // 0 = not located (the column is NOT NULL, check >= 0).
+        raw_line: f.rawLine ?? 0,
       }));
       await tx`insert into public.leads_findings ${tx(rows, 'report_id', 'title', 'status', 'severity', 'category', 'raw_line')}`;
     }
@@ -190,7 +191,7 @@ export function getReportsOverviewFor(userId: string, sessionId: string): Promis
   });
 }
 
-export type ReportFinding = { id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; rawLine: number };
+export type ReportFinding = { id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; rawLine: number | null };
 export type ReportDetail = {
   sessionStatus: 'active' | 'completed';
   report: Omit<ReportSummary, 'counts'> & { lineCount: number; truncated: boolean; parseError: string | null; parseNote: string | null };
@@ -209,7 +210,7 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
     if (!r) return null;
     const findings = await tx<{ id: string; title: string; status: 'pass' | 'fail' | 'unknown'; severity: string | null; category: string | null; raw_line: number }[]>`
       select id, title, status, severity, category, raw_line from public.leads_findings
-      where report_id = ${reportId} order by raw_line, created_at, id`;
+      where report_id = ${reportId} order by (raw_line = 0), raw_line, created_at, id`;
     return {
       sessionStatus: session.status,
       report: {
@@ -225,7 +226,7 @@ export function getReportDetailFor(userId: string, sessionId: string, reportId: 
         parseError: r.parsed.parseError ?? null,
         parseNote: r.parsed.parseNote ?? null,
       },
-      findings: findings.map((f) => ({ id: f.id, title: f.title, status: f.status, severity: f.severity, category: f.category, rawLine: f.raw_line })),
+      findings: findings.map((f) => ({ id: f.id, title: f.title, status: f.status, severity: f.severity, category: f.category, rawLine: f.raw_line > 0 ? f.raw_line : null })),
     };
   });
 }

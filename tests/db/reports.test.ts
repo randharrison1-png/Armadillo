@@ -145,6 +145,14 @@ describe('recordLeadsReportFor', () => {
     expect((await sql`select 1 from public.leads_findings where report_id = ${j.id}`)).toHaveLength(3);
   });
 
+  it('stores unlocated JSON items with a null line (0 in the column)', async () => {
+    const s = await fresh();
+    const r = await recordLeadsReportFor(current.id, { sessionId: s.id, file: { bytes: enc('[{"title":"A","status":"pass"}]'), filename: 'min.txt' } });
+    expect(r.parser).toBe('json');
+    const d = await getReportDetailFor(current.id, s.id, r.id);
+    expect(d!.findings.map((f) => f.rawLine)).toEqual([null]);
+  });
+
   it('stores up to 5,000 findings from a big report', async () => {
     const s = await fresh();
     const big = Array.from({ length: 6000 }, (_, i) => `[-] finding ${i}`).join('\n');

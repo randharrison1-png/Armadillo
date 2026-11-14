@@ -67,12 +67,13 @@ function parseJson(raw: string): ParsedReport {
 
   const located = locateItems(root);
   if (located) {
-    // rawLine: where each item's pretty-printed text starts in `raw` (1 when raw is not pretty-printed).
+    // rawLine: where each item's pretty-printed text starts in `raw` (null when it cannot be located).
     let cursor = 0;
     let line = 1;
-    // After the first item that cannot be located (minified or re-formatted JSON) every later rawLine is 1:
-    // one failed search is O(input), a search per item would be O(items x input).
-    let mapping = true;
+    // An item that cannot be located (minified, re-formatted or escaped differently) gets rawLine null.
+    // A failed search is O(input), so after MAX_MISSES misses no more searches are made (the rest are null).
+    let misses = 0;
+    const MAX_MISSES = 3;
     const pad = ' '.repeat(located.indent);
     for (const item of located.items) {
       if (!isObj(item)) continue;
@@ -84,9 +85,9 @@ function parseJson(raw: string): ParsedReport {
         truncated = true;
         break;
       }
-      let rawLine = 1;
-      const at = mapping ? raw.indexOf(JSON.stringify(item, null, 2).split('\n').join('\n' + pad), cursor) : -1;
-      if (mapping && at < 0) mapping = false;
+      let rawLine: number | null = null;
+      const at = misses < MAX_MISSES ? raw.indexOf(JSON.stringify(item, null, 2).split('\n').join('\n' + pad), cursor) : -1;
+      if (misses < MAX_MISSES && at < 0) misses++;
       if (at >= 0) {
         for (let i = cursor; i < at; i++) if (raw.charCodeAt(i) === 10) line++;
         cursor = at;
