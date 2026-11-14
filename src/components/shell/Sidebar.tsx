@@ -15,6 +15,7 @@ import {
   Settings,
   Shield,
   Globe,
+  ClipboardList,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -205,6 +206,7 @@ export function Sidebar({ userEmail, sessions = [], libraryCounts = {} }: Props)
             })),
           )}
           {navLink('/p', 'Public Pastebin', Globe, matches(pathname, '/p'))}
+          {navLink('/app/pastes', 'My pastes', ClipboardList, matches(pathname, '/app/pastes'))}
           {flowchart}
           {navLink('/app/reports', 'Sessions & Reports', FileClock, matches(pathname, '/app/reports'))}
           {navLink('/app/settings', 'Settings', Settings, matches(pathname, '/app/settings'))}

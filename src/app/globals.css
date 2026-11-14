@@ -95,3 +95,34 @@
     }
   }
 }
+
+/* Pastebin code view: Shiki output (server-rendered) restyled onto the Armadillo tokens. */
+.paste-code pre {
+  margin: 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--bg) !important;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 20px;
+  tab-size: 4;
+}
+.paste-code[data-wrap='true'] pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.paste-code code {
+  display: block;
+  counter-reset: paste-line;
+}
+.paste-code .line::before {
+  counter-increment: paste-line;
+  content: counter(paste-line);
+  display: inline-block;
+  width: 5ch;
+  margin-right: var(--space-3);
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+}
