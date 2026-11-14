@@ -12,6 +12,7 @@ import type { TabDescriptor } from '@/lib/types';
 import { loadClaudeTab, loadContextOptions, loadConversation } from './actions';
 import { Composer } from './Composer';
 import { ContextPicker } from './ContextPicker';
+import { consumeClaudeIntent, useClaudeIntent } from './claudeIntent';
 import { getContextStore } from './contextSelection';
 import { MessageList } from './MessageList';
 import { newRequestId, useClaudeStream } from './useClaudeStream';
@@ -74,6 +75,19 @@ export function ClaudeTab({ namespace: sessionId }: { namespace: string; tab: Ta
   }, [fetchOptions]);
   // Load once up front: the labels also name the chips on sent messages.
   useEffect(() => fetchOptions(), [fetchOptions]);
+
+  // A one-shot request from elsewhere (e.g. the flowchart's "Send LEADS report to Claude"): select
+  // its resources and work in its mode, reusing the empty draft if that is what is open.
+  const hasIntent = useClaudeIntent((s) => !!s.pending[sessionId]);
+  const ready = load.state === 'ready' && current !== null;
+  useEffect(() => {
+    if (!ready || !hasIntent) return;
+    const consumed = consumeClaudeIntent(sessionId);
+    if (!consumed) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- applies a one-shot request from an external store, once
+    setCurrent((c) => (c && c.conversationId === null ? { ...c, mode: consumed.mode } : draft(consumed.mode)));
+    refreshOptions();
+  }, [ready, hasIntent, sessionId, refreshOptions]);
 
   const labels = useMemo(() => {
     const m = new Map<string, string>();
