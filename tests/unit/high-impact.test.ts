@@ -266,3 +266,51 @@ describe('Claude flags and the union', () => {
     expect(requiredFlags(stored, removed, 'powershell').map((f) => f.id)).toEqual(stored.map((f) => f.id));
   });
 });
+
+describe('very long lines', () => {
+  const ADVERSARIAL = [
+    'wmic useraccount set ',
+    'net accounts /x ',
+    'secedit /configure ',
+    'Set-Service -x ',
+    'CurrentControlSet\\Services\\x ',
+    'netsh interface ',
+    'systemctl stop ',
+    'pkill ',
+    'apt remove ',
+    'ip link set ',
+    'nmcli ',
+    'sed -i ',
+    'kill pidof ',
+  ].join('');
+
+  it('a 2 MB adversarial single line is scanned in well under 500 ms, for every language', () => {
+    const line = ADVERSARIAL.repeat(Math.ceil((2 * 1024 * 1024) / ADVERSARIAL.length)).replace(/ $/, '');
+    for (const lang of ['powershell', 'batch', 'bash', 'text', 'markdown'] as const) {
+      const t = performance.now();
+      const flags = scanHighImpact(line, lang);
+      expect(performance.now() - t).toBeLessThan(500);
+      expect(flags.some((f) => f.category === 'other' && f.line === 1)).toBe(true);
+    }
+  });
+
+  it('flags a line longer than the scan window for manual review, and still scans its start', () => {
+    const long = `Stop-Service Spooler; ${'Write-Host x; '.repeat(1000)}`;
+    const flags = scanHighImpact(`Write-Host hi\n${long}\n`, 'powershell');
+    expect(flags.map((f) => [f.line, f.category])).toEqual([
+      [2, 'services'],
+      [2, 'other'],
+    ]);
+    expect(flags[1]!.reason).toMatch(/very long line/i);
+    expect(flags[1]!.reason).toMatch(/review it manually/i);
+  });
+
+  it('a high-impact command past the scan window is still covered by the long-line flag', () => {
+    const flags = scanHighImpact(`Write-Host ${'x'.repeat(10_000)}; Stop-Service WinRM`, 'powershell');
+    expect(flags.map((f) => f.category)).toEqual(['other']);
+  });
+
+  it('a line just within the window gets no long-line flag', () => {
+    expect(scanHighImpact(`Write-Host ${'x'.repeat(4000)}`, 'powershell')).toEqual([]);
+  });
+});

@@ -25,6 +25,8 @@ import type { HighImpactCategory, HighImpactFlag, ScriptLanguage } from '@/lib/t
  *  - Continued commands (PowerShell backtick, Bash backslash, batch caret at the end of a line) are
  *    joined and reported on their first physical line.
  *  - At most one flag per category per line; a line can carry several categories.
+ *  - Lines longer than LINE_SCAN_MAX characters are scanned up to that length only, and always get an
+ *    'other' flag ("review it manually") unless their scanned part already raised one.
  *
  * Limits — why Claude's own flags are unioned with these: the scanner matches text, it does not run
  * or parse the script. Commands assembled at run time (`& ('Stop-' + 'Service')`, variables holding
@@ -50,6 +52,14 @@ export const HIGH_IMPACT_LABEL: Record<HighImpactCategory, string> = {
 
 /** Longest `match` text stored on a flag (characters, ellipsis included). */
 export const MATCH_MAX = 200;
+
+/**
+ * Only the first LINE_SCAN_MAX characters of a (logical) line are matched against the rules: several
+ * patterns chain `.*` and would go quadratic on a hostile multi-megabyte line. A longer line gets an
+ * 'other' flag asking for a manual review, so whatever lies past the window is never waved through.
+ */
+export const LINE_SCAN_MAX = 4096;
+const LONG_LINE_REASON = `Very long line: only its first ${LINE_SCAN_MAX} characters were scanned; review it manually`;
 
 type Rule = { category: HighImpactCategory; pattern: RegExp; reason: string };
 
@@ -219,9 +229,11 @@ export function scanHighImpact(content: string, language: ScriptLanguage): HighI
     }
     const logical = text.trim();
     if (!logical) continue;
+    const long = logical.length > LINE_SCAN_MAX;
+    const window = long ? logical.slice(0, LINE_SCAN_MAX) : logical;
     const seen = new Set<HighImpactCategory>();
     for (const rule of rules) {
-      if (seen.has(rule.category) || !rule.pattern.test(logical)) continue;
+      if (seen.has(rule.category) || !rule.pattern.test(window)) continue;
       seen.add(rule.category);
       out.push({
         id: flagId('scanner', rule.category, start + 1, logical),
@@ -231,6 +243,9 @@ export function scanHighImpact(content: string, language: ScriptLanguage): HighI
         source: 'scanner',
         reason: rule.reason,
       });
+    }
+    if (long && !seen.has('other')) {
+      out.push({ id: flagId('scanner', 'other', start + 1, logical), category: 'other', line: start + 1, match: clip(logical), source: 'scanner', reason: LONG_LINE_REASON });
     }
   }
   return sortFlags(out);
