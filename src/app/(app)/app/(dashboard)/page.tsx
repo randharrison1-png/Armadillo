@@ -4,10 +4,12 @@ import { EmptyState } from '@/components/shell/states/EmptyState';
 import { NewSessionButton } from '@/features/sessions/NewSessionButton';
 import { SessionList } from '@/features/sessions/SessionList';
 import { listRecentSessions } from '@/features/sessions/queries';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Dashboard · Armadillo' };
 
 export default async function AppPage() {
+  await applyFaults('dashboard');
   const sessions = await listRecentSessions(10);
   return (
     <div className="flex flex-col gap-6 p-6">

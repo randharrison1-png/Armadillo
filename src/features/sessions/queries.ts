@@ -1,4 +1,5 @@
 import 'server-only';
+import { cache } from 'react';
 import { requireUser } from '@/server/auth';
 import { getSessionFor, listSessionsFor, type SessionSummary } from './service';
 
@@ -15,7 +16,8 @@ export async function listAllSessions(): Promise<SessionSummary[]> {
   return listSessionsFor(user.id);
 }
 
-export async function getSession(sessionId: string): Promise<SessionSummary | null> {
+/** Memoised per request: the session layout (404 gate) and the page share one query. */
+export const getSession = cache(async (sessionId: string): Promise<SessionSummary | null> => {
   const user = await requireUser();
   return getSessionFor(user.id, sessionId);
-}
+});

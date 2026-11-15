@@ -4,10 +4,12 @@ import { EmptyState } from '@/components/shell/states/EmptyState';
 import { NewSessionButton } from '@/features/sessions/NewSessionButton';
 import { SessionList } from '@/features/sessions/SessionList';
 import { listAllSessions } from '@/features/sessions/queries';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Sessions · Armadillo' };
 
 export default async function SessionsPage() {
+  await applyFaults('sessions');
   const sessions = await listAllSessions();
   return (
     <div className="flex flex-col gap-6 p-6">

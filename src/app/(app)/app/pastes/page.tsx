@@ -2,10 +2,12 @@ import type { Metadata } from 'next';
 import { MyPastes } from '@/features/pastebin/MyPastes';
 import { listMyPastes } from '@/features/pastebin/service';
 import { requireUser } from '@/server/auth';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'My pastes · Armadillo' };
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ edit?: string; delete?: string }> }) {
+  await applyFaults('pastes');
   const user = await requireUser();
   const [pastes, sp] = await Promise.all([listMyPastes(user.id), searchParams]);
   return (

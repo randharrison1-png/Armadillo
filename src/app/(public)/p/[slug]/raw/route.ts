@@ -1,11 +1,12 @@
 import { extensionFor } from '@/features/pastebin/schema';
+import { RAW_PASTE_CSP } from '@/server/security/headers';
 import { getPaste } from '@/features/pastebin/service';
 
 const BASE_HEADERS = {
   'Content-Type': 'text/plain; charset=utf-8',
   'X-Content-Type-Options': 'nosniff',
   // Belt and braces: even if a browser ignored text/plain, nothing may load or run.
-  'Content-Security-Policy': "default-src 'none'; sandbox",
+  'Content-Security-Policy': RAW_PASTE_CSP,
 };
 
 export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {

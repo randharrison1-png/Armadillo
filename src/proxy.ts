@@ -2,6 +2,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { authMode } from '@/server/auth';
 import { updateSupabaseSession } from '@/server/auth/supabase';
 import { assertTestAuthAllowed, TEST_AUTH_COOKIE, verifyTestSession } from '@/server/auth/testAuth';
+import { buildCsp, isRawPastePath, newNonce } from '@/server/security/headers';
+
+const CSP = 'Content-Security-Policy';
 
 /**
  * Next 16 Proxy (formerly middleware.ts; Node.js runtime). Optimistic guard for /app/*:
@@ -10,14 +13,29 @@ import { assertTestAuthAllowed, TEST_AUTH_COOKIE, verifyTestSession } from '@/se
  *
  * Test mode verifies the HMAC cookie fully (signature + expiry), so a forged cookie never
  * reaches the app. Supabase mode refreshes the session cookies on every request, per @supabase/ssr.
+ *
+ * It also sets the Content-Security-Policy with a fresh nonce per request: on the request (Next
+ * reads the nonce from it and stamps its inline scripts) and on the response. The raw paste route
+ * sets its own stricter policy, so it is left alone here.
  */
 export async function proxy(request: NextRequest) {
-  const isApp = request.nextUrl.pathname === '/app' || request.nextUrl.pathname.startsWith('/app/');
+  const { pathname } = request.nextUrl;
+  const isApp = pathname === '/app' || pathname.startsWith('/app/');
+
+  const csp = isRawPastePath(pathname)
+    ? null
+    : buildCsp({ nonce: newNonce(), dev: process.env.NODE_ENV === 'development', supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL });
+  // Set before any NextResponse.next({ request }) below so the app sees it.
+  if (csp) request.headers.set(CSP, csp);
+  const withCsp = (response: NextResponse): NextResponse => {
+    if (csp) response.headers.set(CSP, csp);
+    return response;
+  };
 
   if (authMode() === 'test') {
-    if (!isApp) return NextResponse.next();
+    if (!isApp) return withCsp(NextResponse.next({ request }));
     const user = verifyTestSession(request.cookies.get(TEST_AUTH_COOKIE)?.value, assertTestAuthAllowed());
-    return user ? NextResponse.next() : redirectToLogin(request);
+    return user ? withCsp(NextResponse.next({ request })) : redirectToLogin(request);
   }
 
   const { response, user } = await updateSupabaseSession(request);
@@ -27,7 +45,7 @@ export async function proxy(request: NextRequest) {
     for (const cookie of response.cookies.getAll()) redirect.cookies.set(cookie);
     return redirect;
   }
-  return response;
+  return withCsp(response);
 }
 
 function redirectToLogin(request: NextRequest): NextResponse {

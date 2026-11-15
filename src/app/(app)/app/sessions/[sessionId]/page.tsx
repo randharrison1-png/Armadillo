@@ -14,6 +14,7 @@ import { getSession } from '@/features/sessions/queries';
 import { ForensicPanel } from '@/features/sessions/ForensicPanel';
 import { OpenTabFromLink } from '@/features/sessions/OpenTabFromLink';
 import { formatDate } from '@/features/sessions/dates';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Session · Armadillo' };
 // Server actions on this page include structured Claude calls (requirements extraction and
@@ -23,6 +24,7 @@ export const maxDuration = 300;
 type Props = { params: Promise<{ sessionId: string }> };
 
 export default async function SessionPage({ params }: Props) {
+  await applyFaults('session');
   const { sessionId } = await params;
   const session = await getSession(sessionId);
   if (!session) notFound();

@@ -5,10 +5,12 @@ import { requireUser } from '@/server/auth';
 import { getSessionsOverviewFor } from '@/features/sessions/overview';
 import { SessionsReport } from '@/features/sessions/SessionsReport';
 import { NewSessionButton } from '@/features/sessions/NewSessionButton';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Sessions & Reports · Armadillo' };
 
 export default async function ReportsPage() {
+  await applyFaults('reports');
   const user = await requireUser();
   const sessions = await getSessionsOverviewFor(user.id);
   return (

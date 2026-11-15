@@ -6,6 +6,7 @@ import { PasswordForm } from '@/features/settings/PasswordForm';
 import { PrivacyPanel } from '@/features/settings/PrivacyPanel';
 import { getSettingsFor } from '@/features/settings/service';
 import { authMode, requireUser } from '@/server/auth';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Settings · Armadillo' };
 
@@ -21,6 +22,7 @@ function Section({ id, title, children }: { id: string; title: string; children:
 }
 
 export default async function SettingsPage() {
+  await applyFaults('settings');
   const user = await requireUser();
   const settings = await getSettingsFor(user.id);
   return (

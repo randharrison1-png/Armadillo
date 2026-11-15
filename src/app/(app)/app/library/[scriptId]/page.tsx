@@ -2,18 +2,18 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
-import { requireUser } from '@/server/auth';
 import { listRecentSessions } from '@/features/sessions/queries';
 import { ScriptWorkspace } from '@/features/library/ScriptWorkspace';
-import { getScriptEditorDataFor } from '@/features/library/versioning';
+import { loadScriptPage } from '@/features/library/pageData';
+import { applyFaults } from '@/server/testing/faults';
 
 export const metadata: Metadata = { title: 'Script · Armadillo' };
 
 /** A library script outside any session: editor, version history, diffs and downloads in its own tab strip. */
 export default async function ScriptPage({ params }: { params: Promise<{ scriptId: string }> }) {
+  await applyFaults('script');
   const { scriptId } = await params;
-  const user = await requireUser();
-  const [data, sessions] = await Promise.all([getScriptEditorDataFor(user.id, scriptId), listRecentSessions(10)]);
+  const [data, sessions] = await Promise.all([loadScriptPage(scriptId), listRecentSessions(10)]);
   if (!data) notFound();
   // Completed sessions are read-only, so only active ones are fork targets.
   const forkTargets = sessions.filter((s) => s.status === 'active').map((s) => ({ id: s.id, title: s.title }));
