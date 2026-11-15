@@ -36,6 +36,13 @@ describe('test auth provider guard', () => {
     expect(assertTestAuthAllowed({ ...okEnv, NODE_ENV: 'development' })).toBe(SECRET);
   });
 
+  it('test auth refuses when Supabase production variables are present', () => {
+    expect(() => assertTestAuthAllowed({ ...okEnv, SUPABASE_SERVICE_ROLE_KEY: 'service-role' })).toThrow(/SUPABASE_SERVICE_ROLE_KEY/);
+    expect(() => assertTestAuthAllowed({ ...okEnv, NEXT_PUBLIC_SUPABASE_URL: 'https://abcd.supabase.co' })).toThrow(/NEXT_PUBLIC_SUPABASE_URL/);
+    // Blank values (an unfilled .env line) do not count as set.
+    expect(assertTestAuthAllowed({ ...okEnv, SUPABASE_SERVICE_ROLE_KEY: '', NEXT_PUBLIC_SUPABASE_URL: ' ' })).toBe(SECRET);
+  });
+
   it('reads the real process environment by default and refuses there too', async () => {
     vi.stubEnv('ARMADILLO_TEST_AUTH', '1');
     vi.stubEnv('TEST_AUTH_SECRET', SECRET);

@@ -7,6 +7,7 @@ import type { ConversationMode } from '@/server/db/types';
 import type { ClaudeStreamEvents } from '@/features/claude/types';
 import type { TestConnectionResult } from '@/features/settings/schema';
 import { KeyEncryptionConfigError } from '@/server/security/crypto';
+import { budgetMessage, spendClaudeBudget, type ClaudeBudgetKind } from './budget';
 import { buildContext, ForbiddenError } from './context';
 import { renderDataBlock, type DataBlock } from './documents';
 import type { HistoryMessage } from './history';
@@ -69,6 +70,7 @@ export type ClaudeErrorCode =
   | 'timeout'
   | 'connection'
   | 'stopped'
+  | 'budget'
   | 'upstream';
 
 /** A failed upstream call. `message` is fixed, user-facing text (never raw upstream text with secrets). */
@@ -124,6 +126,17 @@ export function toUpstreamError(e: unknown, secrets: readonly string[]): ClaudeU
   }
   // Socket closed mid-stream, DNS failure, etc.
   return new ClaudeUpstreamError('connection', 'The connection to Claude was interrupted. Retry to try again.', true);
+}
+
+/**
+ * The per-user Claude budget (budget.ts): every upstream request of the gateway (chat turn,
+ * structured tool call, connection test) passes here first, AFTER its validation, so a call that is
+ * refused for another reason spends nothing. Over the limit: ClaudeUpstreamError code 'budget'
+ * ("Try again in N minutes"), which every caller already surfaces as user-facing text.
+ */
+export async function assertClaudeBudget(userId: string, kind: ClaudeBudgetKind = 'call'): Promise<void> {
+  const r = await spendClaudeBudget(userId, kind);
+  if (!r.ok) throw new ClaudeUpstreamError('budget', budgetMessage(kind, r.retryAfter), false, 429);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -315,6 +328,12 @@ export async function testClaudeConnection(userId: string): Promise<ConnectionTe
   }
   const model = resolveModel(resolved.profileModel);
   try {
+    await assertClaudeBudget(userId, 'test');
+  } catch (e) {
+    if (e instanceof ClaudeUpstreamError) return { status: 'error', message: e.message };
+    throw e;
+  }
+  try {
     const message = await anthropicClient(resolved.apiKey).messages.create({ model, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
     return { status: 'ok', model: message.model || model, source: resolved.source };
   } catch (e) {
@@ -366,6 +385,7 @@ export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<Clau
   const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
   const documents = [ctx.documents, ...(input.data ?? []).map((d) => renderDataBlock(d, ctx.nonce))].filter(Boolean).join('\n\n');
   const content = [...(documents ? [{ type: 'text' as const, text: documents }] : []), { type: 'text' as const, text: input.instruction(ctx.nonce) }];
+  await assertClaudeBudget(input.userId);
   const out = await runToolCall({
     apiKey,
     model: resolveModel(profileModel),
@@ -489,6 +509,7 @@ async function runTurn(input: StreamClaudeInput, emit: Emit): Promise<void> {
   try {
     const { apiKey, profileModel } = await resolveClaudeKeyFor(input.userId);
     const ctx = await buildContext({ userId: input.userId, sessionId: turn.sessionId, refs: turn.refs, budgetTokens: numberEnv('CLAUDE_CONTEXT_TOKENS', DEFAULT_CONTEXT_TOKENS) });
+    await assertClaudeBudget(input.userId);
     const gen = streamUpstream({
       apiKey,
       model: resolveModel(profileModel),

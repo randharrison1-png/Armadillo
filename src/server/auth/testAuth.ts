@@ -40,6 +40,13 @@ export function assertTestAuthAllowed(env: Env = process.env): string {
   if (env.VERCEL !== undefined) {
     throw new Error('Refusing to start test auth: VERCEL is set. Test auth must never run on a deployment.');
   }
+  // Supabase production credentials mean a real deployment (or one configured like it) even when
+  // NODE_ENV and VERCEL look harmless, e.g. a self-hosted server started with NODE_ENV=test.
+  for (const name of ['SUPABASE_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL'] as const) {
+    if (env[name]?.trim()) {
+      throw new Error(`Refusing to start test auth: ${name} is set. Test auth must never run against a Supabase project.`);
+    }
+  }
   const secret = env.TEST_AUTH_SECRET;
   if (!secret) throw new Error('TEST_AUTH_SECRET is required when ARMADILLO_TEST_AUTH=1.');
   if (secret.length < MIN_SECRET_LENGTH) {

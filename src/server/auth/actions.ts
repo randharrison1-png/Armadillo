@@ -4,6 +4,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { safeNext } from '@/lib/safeNext';
 import { authMode } from './index';
+import { SIGNUPS_DISABLED_MESSAGE, signupsEnabled } from './signups';
 import { createSupabaseServerClient } from './supabase';
 import { normalizeEmail, testSignIn, testSignOut } from './testAuth';
 
@@ -42,6 +43,7 @@ export async function signInWithPassword(_prev: AuthFormState, formData: FormDat
 /** Supabase provider: create an account. Signs in directly unless email confirmation is required. */
 export async function signUpWithPassword(_prev: AuthFormState, formData: FormData): Promise<AuthFormState> {
   if (authMode() !== 'supabase') return { error: 'Sign-up is not available.' };
+  if (!signupsEnabled()) return { error: SIGNUPS_DISABLED_MESSAGE };
   const input = credentials(formData);
   if ('error' in input) return input;
   const supabase = await createSupabaseServerClient();

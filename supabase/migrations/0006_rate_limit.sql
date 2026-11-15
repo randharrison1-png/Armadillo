@@ -1,5 +1,6 @@
--- Fixed-window rate limiting, used by publishing (10 publishes/hour/user, 60 other edits/hour/user)
--- and abuse reports (5/hour per reporter hash).
+-- Fixed-window rate limiting, used by publishing (10 publishes/hour/user, 60 other edits/hour/user),
+-- abuse reports (5/hour per reporter hash) and Claude calls (60 chat/tool calls/hour/user, 10
+-- connection tests/hour/user).
 --
 -- rate_limit_hits is private: RLS on, no policies, every privilege revoked from the API roles. The
 -- only way in is check_rate_limit(), which is SECURITY DEFINER with an empty search_path.
@@ -24,8 +25,8 @@ revoke all on public.rate_limit_hits from public, anon, authenticated, service_r
  * ends (at least 1). Old windows are deleted opportunistically (about 1 call in 20).
  *
  * Callers may only spend their own budget, so a client with direct RPC access cannot exhaust
- * someone else's quota: `publish:` and `edit:` keys must carry the caller's auth.uid(); `report:`
- * keys carry an opaque server-computed hash.
+ * someone else's quota: `publish:`, `edit:`, `claude:` and `claudetest:` keys must carry the caller's
+ * auth.uid(); `report:` keys carry an opaque server-computed hash.
  */
 create function public.check_rate_limit(p_key text, p_limit int, p_window_seconds int)
 returns table (ok boolean, retry_after int)
@@ -46,7 +47,7 @@ begin
     raise exception 'check_rate_limit: invalid limit or window' using errcode = '22023';
   end if;
   if not (
-    (v_uid is not null and p_key in ('publish:' || v_uid, 'edit:' || v_uid))
+    (v_uid is not null and p_key in ('publish:' || v_uid, 'edit:' || v_uid, 'claude:' || v_uid, 'claudetest:' || v_uid))
     or (p_key like 'report:%' and char_length(p_key) > 7)
   ) then
     raise exception 'check_rate_limit: key not allowed' using errcode = '42501';

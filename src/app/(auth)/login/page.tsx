@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { safeNext } from '@/lib/safeNext';
 import { LoginForm } from '@/features/auth/LoginForm';
 import { authMode, getCurrentUser } from '@/server/auth';
+import { signupsEnabled } from '@/server/auth/signups';
 
 export const metadata: Metadata = { title: 'Sign in · Armadillo' };
 
@@ -31,7 +32,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
             That confirmation link is invalid or has expired. Sign in or create the account again.
           </p>
         ) : null}
-        <LoginForm mode={mode} next={dest === '/app' ? undefined : dest} />
+        <LoginForm mode={mode} next={dest === '/app' ? undefined : dest} signupsEnabled={signupsEnabled()} />
       </div>
     </main>
   );

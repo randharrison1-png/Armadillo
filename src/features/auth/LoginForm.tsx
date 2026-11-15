@@ -87,8 +87,12 @@ function AuthForm({
   );
 }
 
-/** `next`: where to go after signing in (already validated by the page with safeNext). */
-export function LoginForm({ mode, next }: { mode: AuthMode; next?: string }) {
+/**
+ * `next`: where to go after signing in (already validated by the page with safeNext).
+ * `signupsEnabled`: SIGNUPS_ENABLED on the server; when false there is no sign-up affordance (the
+ * action refuses too).
+ */
+export function LoginForm({ mode, next, signupsEnabled = true }: { mode: AuthMode; next?: string; signupsEnabled?: boolean }) {
   const [view, setView] = useState<'sign-in' | 'sign-up'>('sign-in');
 
   if (mode === 'test') {
@@ -99,7 +103,7 @@ export function LoginForm({ mode, next }: { mode: AuthMode; next?: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {view === 'sign-in' ? (
+      {view === 'sign-in' || !signupsEnabled ? (
         <AuthForm
           key="sign-in"
           action={signInWithPassword}
@@ -120,9 +124,11 @@ export function LoginForm({ mode, next }: { mode: AuthMode; next?: string }) {
           icon={<UserPlus aria-hidden className="size-4" />}
         />
       )}
-      <Button variant="ghost" type="button" onClick={() => setView(view === 'sign-in' ? 'sign-up' : 'sign-in')}>
-        {view === 'sign-in' ? 'Create an account' : 'I already have an account'}
-      </Button>
+      {signupsEnabled ? (
+        <Button variant="ghost" type="button" onClick={() => setView(view === 'sign-in' ? 'sign-up' : 'sign-in')}>
+          {view === 'sign-in' ? 'Create an account' : 'I already have an account'}
+        </Button>
+      ) : null}
     </div>
   );
 }
