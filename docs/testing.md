@@ -61,7 +61,7 @@ equal the saved content byte for byte. Everything else, including every privacy 
 | Variable | Meaning |
 | --- | --- |
 | `ACCEPTANCE_REAL_CLAUDE=1` | Switch to real mode (read by the spec and by `playwright.config.ts`) |
-| `ANTHROPIC_API_KEY` | Required in real mode; the config throws without it. In CI it comes from the repository secret of the same name |
+| `ANTHROPIC_API_KEY` | Required in real mode; the config throws without it. In CI it comes from the repository secret of the same name, set in the `env:` of the single Playwright step only (not job-wide), so install and browser download never see it |
 | `ACCEPTANCE_CLAUDE_MODEL` | Optional model override (sets `CLAUDE_MODEL` for the server) |
 | `ACCEPTANCE_CLAUDE_TOOL_MAX_TOKENS` | Optional override of the per-call output budget (default 4096) |
 

@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: Claude model to run against (empty: the app's default)
+        description: 'Claude model to run against (leave empty for the app default)'
         required: false
         default: ''
 
@@ -42,9 +42,6 @@ jobs:
     env:
       # Not the local default, so tests/db/globalSetup.ts uses this service instead of scripts/test-db.sh.
       DATABASE_URL: postgres://postgres@127.0.0.1:5432/armadillo_test
-      ACCEPTANCE_REAL_CLAUDE: '1'
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      ACCEPTANCE_CLAUDE_MODEL: ${{ inputs.model }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -55,7 +52,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       # One attempt: a retry would spend the budget twice. The spec fails fast and clearly without the secret.
+      # The key is scoped to this step only: install and browser download never see it. Playwright's webServer
+      # inherits it, and nothing here echoes the environment or uploads a path that could hold it.
       - run: pnpm exec playwright test tests/e2e/acceptance.spec.ts --retries=0
+        env:
+          ACCEPTANCE_REAL_CLAUDE: '1'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ACCEPTANCE_CLAUDE_MODEL: ${{ inputs.model }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

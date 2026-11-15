@@ -38,6 +38,20 @@ const fixturePath = (name: string) => path.join(FIXTURES, name);
 const text = (name: string) => readFileSync(fixturePath(name), 'utf8');
 
 const claude = new AcceptanceClaude();
+
+/**
+ * How many high-impact flags the open proposal lists, once its review is loaded. Mock mode knows the
+ * exact number and waits for it (web-first); real mode cannot, so it waits for the checklist and the
+ * Accept button to render and reads the count after that.
+ */
+async function flagCount(page: Page, expected: number): Promise<{ boxes: Locator; total: number }> {
+  const checklist = inspector(page).getByRole('region', { name: 'High-impact changes' });
+  const boxes = checklist.getByRole('checkbox');
+  await expect(checklist).toBeVisible();
+  await expect(page.getByRole('main').getByRole('button', { name: /^Accept/ })).toBeVisible();
+  if (!claude.real) await expect(boxes).toHaveCount(expected);
+  return { boxes, total: await boxes.count() };
+}
 const SCRIPT_FILE = 'universal-hardening.ps1';
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
@@ -329,10 +343,7 @@ test('v1.0 acceptance: spec 13.1, all eleven steps', async ({ page, browser, bas
 
       // Accept stays disabled until every high-impact change is acknowledged.
       await showInspector(page);
-      const checklist = inspector(page).getByRole('region', { name: 'High-impact changes' });
-      const boxes = checklist.getByRole('checkbox');
-      const total = await boxes.count();
-      if (!claude.real) expect(total).toBe(3); // Guest account, administrator removal, Remote Desktop
+      const { boxes, total } = await flagCount(page, 3); // Guest account, administrator removal, Remote Desktop
       const accept = panel(page).getByRole('button', { name: /^Accept/ });
       if (total > 0) {
         await expect(accept).toHaveText(`Accept (0 of ${total} acknowledged)`);
@@ -442,10 +453,7 @@ test('v1.0 acceptance: spec 13.1, all eleven steps', async ({ page, browser, bas
     let remediation: SavedVersion;
     await test.step('9. review the remediation, download the follow-up script and run it', async () => {
       await showInspector(page);
-      const checklist = inspector(page).getByRole('region', { name: 'High-impact changes' });
-      const boxes = checklist.getByRole('checkbox');
-      const total = await boxes.count();
-      if (!claude.real) expect(total).toBe(1); // the password-policy change
+      const { boxes, total } = await flagCount(page, 1); // the password-policy change
       const accept = panel(page).getByRole('button', { name: /^Accept/ });
       if (total > 0) await expect(accept).toBeDisabled();
       for (let i = 0; i < total; i++) await boxes.nth(i).click();
@@ -564,6 +572,9 @@ test('v1.0 acceptance: spec 13.1, all eleven steps', async ({ page, browser, bas
     await test.step('11. sign out, sign in, reopen the session: every document, version, note and status is intact', async () => {
       await page.getByRole('button', { name: 'Sign out' }).click();
       await expect(page).toHaveURL(/\/login$/);
+      // Signed out on the page itself, not just redirected once: the private session route now sends this browser to /login.
+      await page.goto(`/app/sessions/${sessionId}`);
+      await expect(page).toHaveURL(/\/login/);
       await visitor.expectNothingPublic('signed out');
       await signIn(page, email);
 
