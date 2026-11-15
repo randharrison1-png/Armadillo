@@ -18,9 +18,17 @@ export function PrivacyPanel() {
           <li>Every chat turn sends Claude the session title and operating system, the conversation so far, and your message.</li>
           <li>On top of that, it receives only the items you select in the session: scripts, the README, reports and evidence notes. The contents of evidence files are never sent.</li>
           <li>
-            The buttons that ask Claude to work on something send what that work needs, without the picker: Extract requirements sends the README; Propose adaptation sends the README, the script and its requirements; Remediation sends the report&apos;s findings, the script and the requirements; mapping findings sends the findings and requirements.
+            Buttons that ask Claude to work on something send what that work needs, without the picker:
+            <ul className="mt-2 flex list-disc flex-col gap-2 pl-4">
+              <li>Extract requirements sends the README.</li>
+              <li>Assess coverage sends the README(s) the requirements came from, the script version you choose, and the text of the requirements being assessed.</li>
+              <li>Propose adaptation sends the README, the script, and all of the session&apos;s requirements with their coverage and suggestions.</li>
+              <li>Remediation sends the whole report, its failing findings, the script and the session&apos;s requirements.</li>
+              <li>Mapping findings sends the findings and requirements, with no documents.</li>
+              <li>Test connection (in Claude settings) sends a one-word ping and none of your content.</li>
+            </ul>
           </li>
-          <li>Nothing is sent automatically. Claude is called only when you send a message or press one of those buttons, and nothing from your library goes anywhere in the background.</li>
+          <li>Nothing is sent automatically. Claude is called only when you send a message, or press Extract requirements, Assess coverage, Propose adaptation, Remediation, Mapping findings or Test connection. Nothing from your library goes anywhere in the background.</li>
           <li>What is sent goes to Anthropic, using your own Claude API key if you saved one, or the workspace key set up on the server otherwise.</li>
           <li>Text from uploaded READMEs, reports and pasted content is treated as untrusted data, not as instructions.</li>
           <li>Your Claude API key is encrypted on the server. It never reaches your browser, and Armadillo shows only its last four characters.</li>
@@ -31,7 +39,7 @@ export function PrivacyPanel() {
       <div className="flex flex-col gap-2">
         <h3 className="text-small font-semibold text-text">Export my data</h3>
         <p className="text-small text-muted">
-          Download a zip with your sessions, scripts and versions, READMEs, conversations, reports, requirements, evidence, activity and pastes as JSON, plus your uploaded files. It never includes your Claude API key (only its last four characters). Exports are limited to {EXPORT_MAX_BYTES / 1024 / 1024} MB of data and files in total. The download link works for 10 minutes.
+          Download a zip with your sessions, scripts and versions, READMEs, conversations, reports, requirements, evidence, activity and pastes as JSON, plus your uploaded files. It never includes your Claude API key (only its last four characters). Exports are limited to {EXPORT_MAX_BYTES / 1024 / 1024} MB of data and files in total. The download link works for 10 minutes, and the latest export zip stays in your private storage until you export again or delete your account.
         </p>
         <ExportData />
       </div>

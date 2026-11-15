@@ -20,6 +20,7 @@ const service = await import('@/features/settings/service');
 const { buildAccountExport, createAccountExportLink, EXPORT_FILES_TOO_LARGE, EXPORT_OBJECT_NAME } = await import('@/features/settings/export');
 const { deleteAccountFor, AccountDeletionError } = await import('@/features/settings/deleteAccount');
 const actions = await import('@/features/settings/actions');
+const { EXPORT_MAX_BYTES } = await import('@/features/settings/schema');
 
 let mock: AnthropicMock;
 let dir: string;
@@ -183,11 +184,26 @@ describe('export', () => {
       put: store.put.bind(store),
       get: store.get.bind(store),
       removePrefix: store.removePrefix.bind(store),
-      stat: async () => ({ size: 51 * 1024 * 1024 }),
+      stat: async () => ({ size: EXPORT_MAX_BYTES + 1024 * 1024 }),
       list: async () => [`${current.id}/library/huge.bin`],
       signDownload: store.signDownload.bind(store),
     };
     await expect(buildAccountExport(current.id, big)).rejects.toMatchObject({ code: EXPORT_FILES_TOO_LARGE });
+  });
+
+  it('a near-cap account is refused with the too-large error, leaving room for zip overhead', async () => {
+    const nearCap = (EXPORT_MAX_BYTES - 1) as number;
+    const near: FileStore = {
+      ...store,
+      put: store.put.bind(store),
+      get: store.get.bind(store),
+      removePrefix: store.removePrefix.bind(store),
+      stat: async () => ({ size: nearCap }),
+      list: async () => [`${current.id}/library/a.bin`],
+      signDownload: store.signDownload.bind(store),
+    };
+    // Data JSON and per-entry zip overhead push it over the cap: the user-facing error, not a failed upload.
+    await expect(buildAccountExport(current.id, near)).rejects.toMatchObject({ code: EXPORT_FILES_TOO_LARGE });
   });
 
   it('counts the data JSON toward the cap too', async () => {

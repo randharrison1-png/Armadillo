@@ -23,12 +23,52 @@ describe('PrivacyPanel copy matches what the gateway sends', () => {
     expect(text()).not.toMatch(/scripts, the README, reports and requirements/i);
   });
 
-  it('says the button actions send what they work on', () => {
+  /** The disclosure list item that starts with `action`. */
+  const item = (action: RegExp) => {
+    const hit = screen.getAllByRole('listitem').find((li) => action.test(li.textContent ?? ''));
+    expect(hit, `a list item for ${action}`).toBeDefined();
+    return hit!.textContent ?? '';
+  };
+
+  it('discloses what each Claude action sends', () => {
     render(<PrivacyPanel />);
-    expect(text()).toMatch(/Extract requirements/);
-    expect(text()).toMatch(/Propose adaptation/);
-    expect(text()).toMatch(/Remediation/);
-    expect(text()).toMatch(/findings/i);
+    const extract = item(/^Extract requirements/);
+    expect(extract).toMatch(/README/);
+
+    const assess = item(/^Assess coverage/);
+    expect(assess).toMatch(/README/);
+    expect(assess).toMatch(/script version you choose/i);
+    expect(assess).toMatch(/text of the requirements/i);
+
+    const propose = item(/^Propose adaptation/);
+    expect(propose).toMatch(/README/);
+    expect(propose).toMatch(/script/);
+    expect(propose).toMatch(/all of the session.s requirements with their coverage and suggestions/i);
+
+    const remediation = item(/^Remediation/);
+    expect(remediation).toMatch(/whole report/i);
+    expect(remediation).toMatch(/failing findings/i);
+    expect(remediation).toMatch(/script/);
+    expect(remediation).toMatch(/requirements/);
+
+    const mapping = item(/^Mapping findings/);
+    expect(mapping).toMatch(/findings and requirements/i);
+
+    const ping = item(/^Test connection/);
+    expect(ping).toMatch(/one-word ping/i);
+  });
+
+  it('lists every way Claude is called, so "only when you ask" is true', () => {
+    render(<PrivacyPanel />);
+    const rule = item(/Nothing is sent automatically/);
+    for (const trigger of [/send a message/i, /Extract requirements/, /Assess coverage/, /Propose adaptation/, /Remediation/, /Mapping findings/, /Test connection/]) {
+      expect(rule).toMatch(trigger);
+    }
+  });
+
+  it('says the latest export stays in private storage', () => {
+    render(<PrivacyPanel />);
+    expect(text()).toMatch(/latest export zip stays in your private storage until you export again or delete your account/i);
   });
 
   it('keeps: nothing is sent automatically, pastes are public, key never reaches the browser', () => {
@@ -41,7 +81,7 @@ describe('PrivacyPanel copy matches what the gateway sends', () => {
 
   it('states the export cap', () => {
     render(<PrivacyPanel />);
-    expect(text()).toMatch(/50 MB/);
+    expect(text()).toMatch(/48 MB/);
   });
 });
 

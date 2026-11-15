@@ -47,9 +47,18 @@ export type PasswordResult =
   | { ok: true }
   | { ok: false; code: 'unsupported' | 'wrong_password' | 'weak_password' | 'invalid' | 'failed'; error: string };
 
+/** Content type of the stored export zip; must be in private-files' allowed_mime_types (supabase/storage/private-files.sql). */
+export const EXPORT_CONTENT_TYPE = 'application/zip';
+/** The private-files bucket's file_size_limit (supabase/storage/private-files.sql). */
+export const EXPORT_BUCKET_LIMIT_BYTES = 50 * 1024 * 1024;
+/** Reserved for zip headers, the central directory, the manifest and deflate's worst-case expansion. */
+export const EXPORT_ZIP_MARGIN_BYTES = 2 * 1024 * 1024;
+/** Estimated zip bytes per entry (local header + central directory record + path names), counted against the cap. */
+export const EXPORT_ENTRY_OVERHEAD_BYTES = 512;
 /**
- * Largest export (uncompressed data JSON + private files). The zip is built in memory and uploaded to
- * Storage in one request, so it stays under Supabase's default 50 MB object limit.
+ * Largest export, uncompressed data JSON + private files. The zip is built in memory and uploaded in
+ * one request, so cap + margin stays within the bucket's object size limit: a near-cap account gets
+ * the "too large" message instead of a rejected upload.
  */
-export const EXPORT_MAX_BYTES = 50 * 1024 * 1024;
+export const EXPORT_MAX_BYTES = EXPORT_BUCKET_LIMIT_BYTES - EXPORT_ZIP_MARGIN_BYTES;
 export const EXPORT_LINK_TTL_SECONDS = 10 * 60;

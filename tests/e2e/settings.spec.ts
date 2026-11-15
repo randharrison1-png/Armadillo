@@ -103,7 +103,7 @@ test('privacy panel explains what Claude receives and export downloads a zip wit
   await expect(privacy.getByText(/Nothing is sent automatically/i)).toBeVisible();
   await expect(privacy.getByText(/pastes are public/i)).toBeVisible();
 
-  await expect(privacy.getByText(/50 MB/)).toBeVisible();
+  await expect(privacy.getByText(/48 MB/)).toBeVisible();
   const [download] = await Promise.all([page.waitForEvent('download'), privacy.getByRole('button', { name: 'Export my data' }).click()]);
   expect(download.suggestedFilename()).toMatch(/^armadillo-export-\d{4}-\d{2}-\d{2}\.zip$/);
   const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
@@ -117,7 +117,7 @@ test('privacy panel explains what Claude receives and export downloads a zip wit
 
 test('export shows the server error inline when the data is over the size cap', async ({ page }) => {
   const { id } = await signIn(page);
-  // A sparse 51 MB object: over the 50 MB cap without writing 51 MB of data.
+  // A sparse 51 MB object: over the 48 MB cap without writing 51 MB of data.
   const dir = path.join(FILE_ROOT, id, 'library');
   await mkdir(dir, { recursive: true });
   const big = path.join(dir, 'big.bin');
@@ -127,7 +127,7 @@ test('export shows the server error inline when the data is over the size cap', 
   await page.goto('/app/settings');
   const privacy = page.getByRole('region', { name: 'Privacy' });
   await privacy.getByRole('button', { name: 'Export my data' }).click();
-  await expect(privacy.getByRole('alert')).toContainText(/larger than the 50 MB/);
+  await expect(privacy.getByRole('alert')).toContainText(/larger than the 48 MB/);
   await expect(privacy.getByRole('button', { name: 'Export my data' })).toBeEnabled();
 });
 

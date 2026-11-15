@@ -3,7 +3,7 @@ import { Zip, ZipDeflate } from 'fflate';
 import { withUser } from '@/server/db/withUser';
 import { logActivity } from '@/server/activity';
 import { getFileStore, type FileStore } from '@/server/files/storage';
-import { EXPORT_LINK_TTL_SECONDS, EXPORT_MAX_BYTES } from './schema';
+import { EXPORT_CONTENT_TYPE, EXPORT_ENTRY_OVERHEAD_BYTES, EXPORT_LINK_TTL_SECONDS, EXPORT_MAX_BYTES } from './schema';
 
 export const EXPORT_FILES_TOO_LARGE = 'files_too_large';
 
@@ -52,7 +52,7 @@ export async function buildAccountExport(
   let total = 0;
   for (const p of paths) {
     const st = await store.stat(p);
-    total += st?.size ?? 0;
+    total += (st?.size ?? 0) + EXPORT_ENTRY_OVERHEAD_BYTES;
     if (total > maxBytes) throw new ExportTooLargeError();
   }
 
@@ -75,7 +75,7 @@ export async function buildAccountExport(
   const dataFiles: [string, Uint8Array][] = [];
   for (const [name, rows] of Object.entries(tables)) {
     const bytes = json(rows);
-    total += bytes.byteLength;
+    total += bytes.byteLength + EXPORT_ENTRY_OVERHEAD_BYTES;
     if (total > maxBytes) throw new ExportTooLargeError();
     dataFiles.push([`data/${name}.json`, bytes]);
     counts[name] = rows.length;
@@ -131,7 +131,7 @@ export async function createAccountExportLink(
 ): Promise<{ url: string; filename: string }> {
   const { bytes, filename } = await buildAccountExport(userId, store, opts);
   const objectPath = `${userId}/${EXPORT_DIR}/${EXPORT_OBJECT_NAME}`;
-  await store.put(objectPath, bytes, 'application/zip', { upsert: true });
+  await store.put(objectPath, bytes, EXPORT_CONTENT_TYPE, { upsert: true });
   const url = await store.signDownload(objectPath, { ttlSeconds: EXPORT_LINK_TTL_SECONDS, filename });
   return { url, filename };
 }
