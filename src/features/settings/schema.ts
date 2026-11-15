@@ -47,7 +47,7 @@ export type PasswordResult =
   | { ok: true }
   | { ok: false; code: 'unsupported' | 'wrong_password' | 'weak_password' | 'invalid' | 'failed'; error: string };
 
-/** Content type of the stored export zip; must be in private-files' allowed_mime_types (supabase/storage/private-files.sql). */
+/** Content type of the stored export zip (the private-files bucket has no MIME allowlist; supabase/storage/private-files.sql). */
 export const EXPORT_CONTENT_TYPE = 'application/zip';
 /** The private-files bucket's file_size_limit (supabase/storage/private-files.sql). */
 export const EXPORT_BUCKET_LIMIT_BYTES = 50 * 1024 * 1024;
