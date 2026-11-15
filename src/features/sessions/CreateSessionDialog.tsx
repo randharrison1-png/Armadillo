@@ -21,12 +21,13 @@ import { OS_LABEL, OS_VALUES, TITLE_MAX } from './schema';
 
 type Errors = { title?: string; os?: string; form?: string };
 
-export function CreateSessionDialog({ variant = 'primary' }: { variant?: 'primary' | 'secondary' }) {
+export function CreateSessionDialog({ variant = 'primary', defaultOs }: { variant?: 'primary' | 'secondary'; defaultOs?: OsType | null }) {
+  const initialOs: OsType = defaultOs ?? 'windows';
   const router = useRouter();
   const ids = { title: useId(), titleError: useId(), os: useId() };
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
-  const [os, setOs] = useState<OsType>('windows');
+  const [os, setOs] = useState<OsType>(initialOs);
   const [errors, setErrors] = useState<Errors>({});
   const [pending, startTransition] = useTransition();
 
@@ -35,7 +36,7 @@ export function CreateSessionDialog({ variant = 'primary' }: { variant?: 'primar
     setOpen(next);
     if (!next) {
       setTitle('');
-      setOs('windows');
+      setOs(initialOs);
       setErrors({});
     }
   };

@@ -65,3 +65,9 @@ export async function updateModelFor(userId: string, input: unknown): Promise<st
 export async function logPasswordChangedFor(userId: string): Promise<void> {
   await withUser(userId, (tx) => logActivity(tx, { action: 'settings.password.changed', entityType: 'profile', entityId: userId }));
 }
+
+/** The saved default OS for new sessions (null when unset). */
+export async function getDefaultOsFor(userId: string): Promise<OsType | null> {
+  const [row] = await withUser(userId, (tx) => tx<{ default_os: OsType | null }[]>`select default_os from public.profiles where id = ${userId}`);
+  return row?.default_os ?? null;
+}

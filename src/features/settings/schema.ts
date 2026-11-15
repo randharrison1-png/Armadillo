@@ -47,5 +47,9 @@ export type PasswordResult =
   | { ok: true }
   | { ok: false; code: 'unsupported' | 'wrong_password' | 'weak_password' | 'invalid' | 'failed'; error: string };
 
-/** Largest total size of private files the export zip will hold in memory. */
-export const EXPORT_MAX_FILE_BYTES = 100 * 1024 * 1024;
+/**
+ * Largest export (uncompressed data JSON + private files). The zip is built in memory and uploaded to
+ * Storage in one request, so it stays under Supabase's default 50 MB object limit.
+ */
+export const EXPORT_MAX_BYTES = 50 * 1024 * 1024;
+export const EXPORT_LINK_TTL_SECONDS = 10 * 60;

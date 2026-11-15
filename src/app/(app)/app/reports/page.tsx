@@ -4,7 +4,7 @@ import { EmptyState } from '@/components/shell/states/EmptyState';
 import { requireUser } from '@/server/auth';
 import { getSessionsOverviewFor } from '@/features/sessions/overview';
 import { SessionsReport } from '@/features/sessions/SessionsReport';
-import { CreateSessionDialog } from '@/features/sessions/CreateSessionDialog';
+import { NewSessionButton } from '@/features/sessions/NewSessionButton';
 
 export const metadata: Metadata = { title: 'Sessions & Reports · Armadillo' };
 
@@ -19,7 +19,7 @@ export default async function ReportsPage() {
           icon={FileClock}
           title="No sessions yet"
           description="Reports, remediation and evidence of each hardening session appear here."
-          actions={<CreateSessionDialog />}
+          actions={<NewSessionButton />}
         />
       ) : (
         <SessionsReport sessions={sessions} />

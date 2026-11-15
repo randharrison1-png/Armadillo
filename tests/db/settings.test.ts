@@ -9,7 +9,7 @@ import { createTestUser, sql } from './helpers';
 import { testDatabaseUrl } from './env';
 import { closePool } from '@/server/db/pool';
 import { createSessionFor } from '@/features/sessions/service';
-import { LocalFileStore, type FileStore } from '@/server/files/storage';
+import { LocalFileStore, verifyLocalDownloadUrl, type FileStore } from '@/server/files/storage';
 
 let current: { id: string; email: string };
 vi.mock('@/server/auth', () => ({ requireUser: async () => current, getCurrentUser: async () => current, authMode: () => 'test' }));
@@ -17,7 +17,7 @@ vi.mock('@/server/auth', () => ({ requireUser: async () => current, getCurrentUs
 const { saveClaudeKeyFor } = await import('@/server/claude/keys');
 const { testClaudeConnection } = await import('@/server/claude/client');
 const service = await import('@/features/settings/service');
-const { buildAccountExport, EXPORT_FILES_TOO_LARGE } = await import('@/features/settings/export');
+const { buildAccountExport, createAccountExportLink, EXPORT_FILES_TOO_LARGE, EXPORT_OBJECT_NAME } = await import('@/features/settings/export');
 const { deleteAccountFor, AccountDeletionError } = await import('@/features/settings/deleteAccount');
 const actions = await import('@/features/settings/actions');
 
@@ -25,6 +25,7 @@ let mock: AnthropicMock;
 let dir: string;
 let store: LocalFileStore;
 const ENV_KEY = 'env-test-key-0000';
+const SIGNING_SECRET = 'db-test-signing-secret-0123456789abcdef';
 
 beforeAll(async () => {
   process.env.DATABASE_URL ??= testDatabaseUrl();
@@ -35,7 +36,7 @@ beforeAll(async () => {
   process.env.CLAUDE_MAX_RETRIES = '0';
   delete process.env.CLAUDE_MODEL;
   dir = await mkdtemp(path.join(tmpdir(), 'armadillo-settings-'));
-  store = new LocalFileStore(dir);
+  store = new LocalFileStore(dir, SIGNING_SECRET);
 });
 afterAll(async () => {
   await mock.close();
@@ -148,6 +149,8 @@ describe('export', () => {
     const mine = await seedAccount(current.id, store);
     const other = await createTestUser();
     await seedAccount(other.id, store);
+    // A previous export zip must never be packed into the next one.
+    await store.put(`${current.id}/_exports/${EXPORT_OBJECT_NAME}`, new TextEncoder().encode('OLD-EXPORT'), 'application/zip');
 
     const out = await buildAccountExport(current.id, store);
     expect(out.filename).toMatch(/^armadillo-export-\d{4}-\d{2}-\d{2}\.zip$/);
@@ -165,6 +168,7 @@ describe('export', () => {
 
     // Nothing from the key or another account anywhere in the archive.
     expect(names.filter((n) => n.startsWith('files/') && !n.startsWith(`files/${current.id}/`))).toEqual([]);
+    expect(names.some((n) => n.includes('_exports'))).toBe(false);
     for (const n of names) {
       const text = strFromU8(files[n]!);
       expect(text).not.toContain(c);
@@ -179,10 +183,45 @@ describe('export', () => {
       put: store.put.bind(store),
       get: store.get.bind(store),
       removePrefix: store.removePrefix.bind(store),
-      stat: async () => ({ size: 101 * 1024 * 1024 }),
+      stat: async () => ({ size: 51 * 1024 * 1024 }),
       list: async () => [`${current.id}/library/huge.bin`],
+      signDownload: store.signDownload.bind(store),
     };
     await expect(buildAccountExport(current.id, big)).rejects.toMatchObject({ code: EXPORT_FILES_TOO_LARGE });
+  });
+
+  it('counts the data JSON toward the cap too', async () => {
+    await seedAccount(current.id, store);
+    await expect(buildAccountExport(current.id, store, { maxBytes: 50 })).rejects.toMatchObject({ code: EXPORT_FILES_TOO_LARGE });
+  });
+
+  it('createAccountExportLink stores the zip under _exports (overwriting) and returns a signed, expiring URL', async () => {
+    const mine = await seedAccount(current.id, store);
+    const first = await createAccountExportLink(current.id, store);
+    const second = await createAccountExportLink(current.id, store);
+    const objectPath = `${current.id}/_exports/${EXPORT_OBJECT_NAME}`;
+    expect((await store.list(current.id)).filter((p) => p.includes('_exports'))).toEqual([objectPath]);
+
+    const files = unzipSync(await store.get(objectPath));
+    expect(Object.keys(files)).toContain(`files/${mine.filePath}`);
+    expect(Object.keys(files).some((n) => n.includes('_exports'))).toBe(false);
+
+    for (const r of [first, second]) {
+      expect(r.filename).toMatch(/^armadillo-export-\d{4}-\d{2}-\d{2}\.zip$/);
+      const u = new URL(r.url, 'http://x');
+      expect(verifyLocalDownloadUrl(u.searchParams, SIGNING_SECRET)).toMatchObject({ path: objectPath, filename: r.filename });
+      // Expires after 10 minutes.
+      const exp = Number(u.searchParams.get('exp'));
+      expect(exp - Date.now() / 1000).toBeGreaterThan(9 * 60);
+      expect(exp - Date.now() / 1000).toBeLessThanOrEqual(10 * 60 + 1);
+      expect(verifyLocalDownloadUrl(u.searchParams, SIGNING_SECRET, (exp + 1) * 1000)).toBeNull();
+    }
+  });
+
+  it('a deleted account takes its stored export with it', async () => {
+    await createAccountExportLink(current.id, store);
+    await deleteAccountFor(current.id, { store });
+    expect(await store.list(current.id)).toEqual([]);
   });
 });
 
@@ -229,6 +268,7 @@ describe('delete account', () => {
       removePrefix: async () => {
         throw new Error('storage unavailable');
       },
+      signDownload: store.signDownload.bind(store),
     };
     await expect(deleteAccountFor(current.id, { store: failing })).rejects.toBeInstanceOf(AccountDeletionError);
     const after = await countRows(current.id);
@@ -250,6 +290,7 @@ describe('delete account', () => {
       stat: store.stat.bind(store),
       list: store.list.bind(store),
       removePrefix: async () => {}, // claims success, removes nothing
+      signDownload: store.signDownload.bind(store),
     };
     await expect(deleteAccountFor(current.id, { store: lying })).rejects.toBeInstanceOf(AccountDeletionError);
     expect((await countRows(current.id)).user).toBe(1);
@@ -261,5 +302,13 @@ describe('delete account', () => {
       expect(await actions.deleteAccountAction(bad)).toMatchObject({ ok: false });
     }
     expect((await countRows(current.id)).user).toBe(1);
+  });
+});
+
+describe('default OS for new sessions', () => {
+  it('getDefaultOsFor returns the saved default, or null', async () => {
+    expect(await service.getDefaultOsFor(current.id)).toBeNull();
+    await service.updateDefaultOsFor(current.id, 'linux');
+    expect(await service.getDefaultOsFor(current.id)).toBe('linux');
   });
 });

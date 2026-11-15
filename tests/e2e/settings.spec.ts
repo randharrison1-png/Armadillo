@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { expect, test, type Page } from '@playwright/test';
@@ -68,6 +68,13 @@ test('account, Claude and defaults settings persist; test connection reports the
   const [p] = await sql<{ display_name: string; default_os: string; model: string }[]>`select display_name, default_os, model from public.profiles where id = ${id}`;
   expect(p).toEqual({ display_name: 'Rand H', default_os: 'windows_server', model: 'claude-haiku-5-5' });
 
+  // The default OS is what the New session dialog starts on.
+  await page.goto('/app');
+  await page.getByRole('button', { name: 'New session' }).click();
+  await expect(page.getByRole('dialog', { name: 'New session' }).getByLabel('Operating system')).toHaveText('Windows Server');
+  await page.keyboard.press('Escape');
+  await page.goto('/app/settings');
+
   // Test connection: ok, then an invalid key.
   await mock.reset();
   await mock.enqueue({ chunks: ['pong'] });
@@ -92,11 +99,12 @@ test('privacy panel explains what Claude receives and export downloads a zip wit
   await expect(page.getByTestId('claude-key-masked')).toBeVisible();
 
   const privacy = page.getByRole('region', { name: 'Privacy' });
-  await expect(privacy.getByText(/only the items you select/i)).toBeVisible();
-  await expect(privacy.getByText(/Nothing from your library is sent automatically/i)).toBeVisible();
+  await expect(privacy.getByText(/session title and operating system, the conversation so far/i)).toBeVisible();
+  await expect(privacy.getByText(/Nothing is sent automatically/i)).toBeVisible();
   await expect(privacy.getByText(/pastes are public/i)).toBeVisible();
 
-  const [download] = await Promise.all([page.waitForEvent('download'), privacy.getByRole('link', { name: 'Export my data' }).click()]);
+  await expect(privacy.getByText(/50 MB/)).toBeVisible();
+  const [download] = await Promise.all([page.waitForEvent('download'), privacy.getByRole('button', { name: 'Export my data' }).click()]);
   expect(download.suggestedFilename()).toMatch(/^armadillo-export-\d{4}-\d{2}-\d{2}\.zip$/);
   const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
   expect(Object.keys(files)).toEqual(expect.arrayContaining(['data/profiles.json', 'data/pastes.json', 'manifest.json']));
@@ -105,6 +113,22 @@ test('privacy panel explains what Claude receives and export downloads a zip wit
   expect(all).toContain('EXPT');
   expect(all).not.toContain(key);
   expect(all).not.toContain('claude_key_ciphertext');
+});
+
+test('export shows the server error inline when the data is over the size cap', async ({ page }) => {
+  const { id } = await signIn(page);
+  // A sparse 51 MB object: over the 50 MB cap without writing 51 MB of data.
+  const dir = path.join(FILE_ROOT, id, 'library');
+  await mkdir(dir, { recursive: true });
+  const big = path.join(dir, 'big.bin');
+  await writeFile(big, '');
+  await truncate(big, 51 * 1024 * 1024);
+
+  await page.goto('/app/settings');
+  const privacy = page.getByRole('region', { name: 'Privacy' });
+  await privacy.getByRole('button', { name: 'Export my data' }).click();
+  await expect(privacy.getByRole('alert')).toContainText(/larger than the 50 MB/);
+  await expect(privacy.getByRole('button', { name: 'Export my data' })).toBeEnabled();
 });
 
 test('delete account removes private files and rows', async ({ page }) => {

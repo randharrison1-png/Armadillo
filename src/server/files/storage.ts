@@ -1,5 +1,5 @@
 import 'server-only';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -10,13 +10,52 @@ import { ALLOWED_EXTENSIONS, extensionOf, FileTooLargeError, limitFor, Unsupport
 export * from './limits';
 
 export interface FileStore {
-  put(path: string, bytes: Uint8Array, contentType: string): Promise<void>;
+  /** Stores an object. Fails if it exists unless `opts.upsert` (the local store always overwrites). */
+  put(path: string, bytes: Uint8Array, contentType: string, opts?: { upsert?: boolean }): Promise<void>;
   get(path: string): Promise<Uint8Array>;
   removePrefix(prefix: string): Promise<void>;
   /** Size of the stored object, or null if it does not exist. */
   stat(path: string): Promise<{ size: number } | null>;
   /** Every object path under `prefix` (recursive, bucket-relative, `/`-separated); [] if there are none. */
   list(prefix: string): Promise<string[]>;
+  /**
+   * A time-limited URL from which the (private) object downloads as an attachment named `filename`.
+   * Supabase: a signed Storage URL. Local store: an HMAC-signed route that also requires the same signed-in user.
+   */
+  signDownload(path: string, opts: { ttlSeconds: number; filename: string }): Promise<string>;
+}
+
+export const LOCAL_SIGNED_URL = '/api/files/signed';
+
+function localSigningSecret(explicit?: string): string {
+  const secret = explicit ?? process.env.LOCAL_FILE_SIGNING_SECRET ?? process.env.TEST_AUTH_SECRET;
+  if (!secret || secret.length < 32) throw new Error('LOCAL_FILE_SIGNING_SECRET (or TEST_AUTH_SECRET) of at least 32 characters is required for local signed downloads');
+  return secret;
+}
+
+const localSignature = (secret: string, p: string, exp: string, name: string) =>
+  createHmac('sha256', secret).update(`${p}\n${exp}\n${name}`).digest('base64url');
+
+/**
+ * Checks the query of a LocalFileStore signed URL (`p`, `exp`, `n`, `sig`): signature, then expiry.
+ * Returns the object path and download name, or null. The caller must still check the path belongs to
+ * the signed-in user.
+ */
+export function verifyLocalDownloadUrl(
+  params: URLSearchParams,
+  secret?: string,
+  nowMs: number = Date.now(),
+): { path: string; filename: string } | null {
+  const p = params.get('p');
+  const exp = params.get('exp');
+  const name = params.get('n');
+  const sig = params.get('sig');
+  if (!p || !exp || !name || !sig || !/^\d{1,12}$/.test(exp)) return null;
+  const expected = Buffer.from(localSignature(localSigningSecret(secret), p, exp, name));
+  const given = Buffer.from(sig);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+  if (Math.floor(nowMs / 1000) >= Number(exp)) return null;
+  return { path: p, filename: name };
 }
 
 export type UploadScope = { sessionId?: string; kind: UploadKind };
@@ -45,8 +84,17 @@ function assertSafePath(p: string): string[] {
 /** Dev/test store on the local disk. Everything stays under `root`. */
 export class LocalFileStore implements FileStore {
   private readonly root: string;
-  constructor(root: string) {
+  constructor(
+    root: string,
+    private readonly signingSecret?: string,
+  ) {
     this.root = path.resolve(root);
+  }
+  async signDownload(p: string, opts: { ttlSeconds: number; filename: string }): Promise<string> {
+    assertSafePath(p);
+    const exp = String(Math.floor(Date.now() / 1000) + opts.ttlSeconds);
+    const sig = localSignature(localSigningSecret(this.signingSecret), p, exp, opts.filename);
+    return `${LOCAL_SIGNED_URL}?${new URLSearchParams({ p, exp, n: opts.filename, sig })}`;
   }
   private resolve(p: string): string {
     assertSafePath(p);
@@ -101,10 +149,16 @@ export const PRIVATE_BUCKET = 'private-files';
 /** Production store: Supabase Storage, service-role key (server-side only). Never import client-side. */
 export class SupabaseFileStore implements FileStore {
   constructor(private readonly client: SupabaseClient = serviceClient()) {}
-  async put(p: string, bytes: Uint8Array, contentType: string): Promise<void> {
+  async put(p: string, bytes: Uint8Array, contentType: string, opts: { upsert?: boolean } = {}): Promise<void> {
     assertSafePath(p);
-    const { error } = await this.client.storage.from(PRIVATE_BUCKET).upload(p, bytes, { contentType, upsert: false });
+    const { error } = await this.client.storage.from(PRIVATE_BUCKET).upload(p, bytes, { contentType, upsert: opts.upsert ?? false });
     if (error) throw new Error(`Storage upload failed: ${error.message}`);
+  }
+  async signDownload(p: string, opts: { ttlSeconds: number; filename: string }): Promise<string> {
+    assertSafePath(p);
+    const { data, error } = await this.client.storage.from(PRIVATE_BUCKET).createSignedUrl(p, opts.ttlSeconds, { download: opts.filename });
+    if (error || !data) throw new Error(`Could not sign download: ${error?.message ?? 'unknown error'}`);
+    return data.signedUrl;
   }
   async get(p: string): Promise<Uint8Array> {
     assertSafePath(p);
@@ -150,7 +204,8 @@ export class SupabaseFileStore implements FileStore {
   }
 }
 
-function serviceClient(): SupabaseClient {
+/** Supabase client with the service-role key (server-side only): Storage and the Auth admin API. */
+export function serviceClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase file storage');
