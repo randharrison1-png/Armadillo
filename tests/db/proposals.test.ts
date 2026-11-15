@@ -172,6 +172,44 @@ describe('proposeAdaptation', () => {
     expect(log.meta.code).toBe('structured_output');
   });
 
+  it('a script too large for one adaptation is refused up front with sizes, before any Claude call or budget hit', async () => {
+    const w = await world();
+    process.env.CLAUDE_TOOL_MAX_TOKENS = '4096';
+    try {
+      const limit = service.adaptationLimitBytes(4096);
+      expect(limit).toBeGreaterThan(4 * 1024);
+      const big = await sessionScript(w, `${'Write-Host "line"\r\n'.repeat(Math.ceil((limit + 4096) / 19))}`);
+      const err = await actions.proposeAdaptation({ sessionId: w.sessionId, scriptVersionId: big.current_version_id!, readmeId: w.readmeId }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(service.AdaptationInputError);
+      expect((err as Error).message).toMatch(/^This script is too large for one adaptation \(~\d+ KB; limit ~\d+ KB\)\. Split it into smaller scripts/);
+      expect(mock.requests()).toHaveLength(0);
+      expect(await sql`select 1 from public.rate_limit_hits where key = ${`claude:${w.userId}`}`).toHaveLength(0);
+      // A script within the limit still goes to Claude.
+      await propose(w);
+      expect(mock.requests()).toHaveLength(1);
+    } finally {
+      delete process.env.CLAUDE_TOOL_MAX_TOKENS;
+    }
+  });
+
+  it('the default output budget (16,000 tokens) allows scripts of about 40 KB', () => {
+    expect(service.adaptationLimitBytes(16_000)).toBeGreaterThanOrEqual(40 * 1024);
+    expect(service.adaptationLimitBytes(16_000)).toBeLessThan(50 * 1024);
+    expect(service.adaptationLimitBytes(500)).toBe(0);
+  });
+
+  it('an answer cut off at the output limit fails after ONE call with a specific error', async () => {
+    const w = await world();
+    mock.enqueue({ ...claudeAnswer(), stopReason: 'max_tokens' }, claudeAnswer());
+    const err = await actions.proposeAdaptation({ sessionId: w.sessionId, scriptVersionId: w.baseVersionId, readmeId: w.readmeId }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StructuredOutputError);
+    expect((err as Error).message).toMatch(/cut off/);
+    expect(mock.requests()).toHaveLength(1);
+    expect(await sql`select id from public.proposals where session_id = ${w.sessionId}`).toHaveLength(0);
+    const [log] = await sql<{ meta: { code: string } }[]>`select meta from public.activity_log where owner_id = ${w.userId} and action = 'proposal.adapt.failed'`;
+    expect(log.meta.code).toBe('output_truncated');
+  });
+
   it('is refused before calling Claude: completed session, foreign README or script version, script too long to send whole', async () => {
     const w = await world();
     const other = await createSessionFor(w.userId, { title: 'Other', os: 'windows' });

@@ -212,16 +212,31 @@ export type ClaudeTool = { name: string; description: string; input_schema: Reco
 
 const STRUCTURED_ISSUES_MAX = 2000;
 
-/** Claude's answer did not match the schema, even after the one automatic retry. Message is user-facing. */
+/**
+ * Claude's answer did not match the schema, even after the one automatic retry (code
+ * 'structured_output'), or it was cut off at the output limit (code 'output_truncated', no retry: the
+ * same request would hit the same limit again). Message is user-facing.
+ */
 export class StructuredOutputError extends Error {
   readonly name = 'StructuredOutputError';
-  readonly code = 'structured_output';
+  readonly code: 'structured_output' | 'output_truncated';
   constructor(
     /** What was wrong with the last answer (for logs; may quote Claude's output, never shown raw). */
     readonly issues: string,
+    opts: { truncated?: boolean } = {},
   ) {
-    super("Claude's answer was not in the expected format, even after one automatic retry. Try again.");
+    super(
+      opts.truncated
+        ? "Claude's response was cut off at its output limit, so it could not be used. Try a smaller request (for an adaptation, split the script into smaller scripts)."
+        : "Claude's answer was not in the expected format, even after one automatic retry. Try again.",
+    );
+    this.code = opts.truncated ? 'output_truncated' : 'structured_output';
   }
+}
+
+/** The output budget of one structured call (CLAUDE_TOOL_MAX_TOKENS, default 16,000). */
+export function toolMaxTokens(): number {
+  return numberEnv('CLAUDE_TOOL_MAX_TOKENS', 16_000);
 }
 
 /**
@@ -240,9 +255,6 @@ type Attempt = { ok: true; data: unknown } | { ok: false; issues: string };
 
 function checkToolAnswer<T>(message: Anthropic.Message, tool: ClaudeTool, schema: ZodType<T>): { attempt: Attempt; toolUse: Anthropic.ToolUseBlock | null } {
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === tool.name) ?? null;
-  if (message.stop_reason === 'max_tokens') {
-    return { toolUse, attempt: { ok: false, issues: 'The answer was cut off at the output limit. Keep every item short and call the tool once with the complete input.' } };
-  }
   if (!toolUse) return { toolUse, attempt: { ok: false, issues: `No ${tool.name} tool call was made. Answer only by calling the ${tool.name} tool.` } };
   const parsed = schema.safeParse(toolUse.input);
   if (parsed.success) return { toolUse, attempt: { ok: true, data: parsed.data } };
@@ -261,9 +273,11 @@ function replayBlocks(message: Anthropic.Message): Anthropic.ContentBlockParam[]
 
 /**
  * One forced tool call (no streaming, no database): `tool_choice` names the tool, the input is
- * validated with `schema`; on invalid input (or no tool call, or a truncated answer) it retries ONCE,
- * replaying Claude's answer followed by the validation error (as an error tool_result), then throws
- * StructuredOutputError. Upstream failures throw ClaudeUpstreamError (scrubbed) and are not retried here.
+ * validated with `schema`; on invalid input (or no tool call) it retries ONCE, replaying Claude's
+ * answer followed by the validation error (as an error tool_result), then throws
+ * StructuredOutputError. An answer cut off at max_tokens is NOT retried (the same budget would cut it
+ * off again, doubling time and cost): StructuredOutputError code 'output_truncated' at once.
+ * Upstream failures throw ClaudeUpstreamError (scrubbed) and are not retried here.
  */
 export async function runToolCall<T>(p: {
   apiKey: string;
@@ -296,6 +310,7 @@ export async function runToolCall<T>(p: {
     model = message.model || model;
     usage.input_tokens += message.usage?.input_tokens ?? 0;
     usage.output_tokens += message.usage?.output_tokens ?? 0;
+    if (message.stop_reason === 'max_tokens') throw new StructuredOutputError(`Cut off at max_tokens=${p.maxTokens}.`, { truncated: true });
     const { attempt: result, toolUse } = checkToolAnswer(message, p.tool, p.schema);
     if (result.ok) return { data: result.data as T, model, usage, attempts: attempt };
     issues = result.issues;
@@ -393,7 +408,7 @@ export async function callClaudeTool<T>(input: ClaudeToolInput<T>): Promise<Clau
     content,
     tool: input.tool,
     schema: input.schema,
-    maxTokens: input.maxTokens ?? numberEnv('CLAUDE_TOOL_MAX_TOKENS', 16_000),
+    maxTokens: input.maxTokens ?? toolMaxTokens(),
   });
   return { ...out, nonce: ctx.nonce, trimmed: ctx.trimmed };
 }

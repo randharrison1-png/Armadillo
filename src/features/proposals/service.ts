@@ -1,7 +1,7 @@
 import 'server-only';
 import { logActivity } from '@/server/activity';
 import { withUser, type Tx } from '@/server/db/withUser';
-import { callClaudeTool, ClaudeUpstreamError, ContextTooLargeError, StructuredOutputError, type ClaudeToolResult } from '@/server/claude/client';
+import { callClaudeTool, ClaudeUpstreamError, ContextTooLargeError, StructuredOutputError, toolMaxTokens, type ClaudeToolResult } from '@/server/claude/client';
 import { ForbiddenError } from '@/server/claude/context';
 import { adaptationData, adaptationInstruction, MAX_ADAPT_REQUIREMENTS, type AdaptRequirement } from '@/server/claude/prompts/adaptation';
 import { ADAPT_TOOL, AdaptationSchema, type Adaptation } from '@/server/claude/schemas';
@@ -152,6 +152,29 @@ export function unfence(content: string, language: ScriptVersion['language']): s
 const firstLine = (s: string) => s.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '';
 
 // ------------------------------------------------------------------------------------------------
+// Adaptation size: the whole script comes back in ONE non-streaming tool call
+// ------------------------------------------------------------------------------------------------
+
+/** Conservative bytes per output token for scripts (code tokenizes worse than prose). */
+const BYTES_PER_TOKEN = 3.5;
+/** Output tokens kept for the summary and the flags list. */
+const ADAPT_RESERVED_TOKENS = 1_500;
+/** Room for the adapted script to grow over its base (added lines). */
+const ADAPT_GROWTH = 1.15;
+
+/**
+ * The largest base script (UTF-8 bytes) whose adaptation fits one structured call with `maxTokens`
+ * output tokens: (maxTokens - reserve) × 3.5 bytes/token ÷ 1.15 growth. About 41 KB at the default
+ * 16,000 tokens. Larger scripts are refused before calling Claude; streaming or diff-based adaptation
+ * of large scripts is a documented follow-up (docs/deploy.md).
+ */
+export function adaptationLimitBytes(maxTokens: number): number {
+  return Math.max(0, Math.floor(((maxTokens - ADAPT_RESERVED_TOKENS) * BYTES_PER_TOKEN) / ADAPT_GROWTH));
+}
+
+const kb = (bytes: number) => Math.max(1, Math.round(bytes / 1024));
+
+// ------------------------------------------------------------------------------------------------
 // Propose
 // ------------------------------------------------------------------------------------------------
 
@@ -204,6 +227,14 @@ export async function proposeAdaptationFor(userId: string, input: { sessionId: s
     }));
     return { base: v, requirements: reqs };
   });
+
+  const scriptBytes = new TextEncoder().encode(base.content).length;
+  const limitBytes = adaptationLimitBytes(toolMaxTokens());
+  if (scriptBytes > limitBytes) {
+    throw new AdaptationInputError(
+      `This script is too large for one adaptation (~${kb(scriptBytes)} KB; limit ~${kb(limitBytes)} KB). Split it into smaller scripts and adapt each one, or edit it by hand.`,
+    );
+  }
 
   const scriptRef = { type: 'script_version' as const, id: base.id };
   const failure = { entityId: base.id, sessionId };

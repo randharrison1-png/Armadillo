@@ -93,9 +93,13 @@ describe('runToolCall (structured output)', () => {
     expect(bodies()).toHaveLength(2); // exactly one automatic retry
   });
 
-  it('a truncated answer (max_tokens) is invalid output', async () => {
-    mock.enqueue({ toolUse: { input: { things: [{ name: 'a' }] } }, stopReason: 'max_tokens' }, { toolUse: { input: { things: [{ name: 'a' }] } }, stopReason: 'max_tokens' });
-    await expect(call()).rejects.toBeInstanceOf(StructuredOutputError);
+  it('a truncated answer (max_tokens) fails at once with a specific error: no automatic retry', async () => {
+    mock.enqueue({ toolUse: { input: { things: [{ name: 'a' }] } }, stopReason: 'max_tokens' }, { toolUse: { input: { things: [{ name: 'a' }] } } });
+    const err = await call().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StructuredOutputError);
+    expect((err as StructuredOutputError).code).toBe('output_truncated');
+    expect((err as Error).message).toMatch(/cut off/);
+    expect(bodies()).toHaveLength(1);
   });
 
   it('upstream failures are ClaudeUpstreamError and are not retried as validation errors', async () => {
