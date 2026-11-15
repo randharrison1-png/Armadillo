@@ -44,6 +44,18 @@ async function sessionStatusOf(tx: Tx, sessionId: string): Promise<'active' | 'c
 /** 55000 is raised by assert_session_writable() when the session was completed meanwhile. */
 const isReadOnlyError = (e: unknown) => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === '55000';
 
+/**
+ * LOCK ORDER (steps.ts): every requirement write locks the session row FIRST (FOR NO KEY UPDATE),
+ * then its own rows. submitFinal holds the row FOR UPDATE while it completes the session, so a write
+ * racing it waits for that commit and then sees status 'completed' instead of landing in a session
+ * that was just completed (the read-only trigger reads sessions.status without a lock).
+ */
+async function lockActiveSession(tx: Tx, sessionId: string): Promise<void> {
+  const [s] = await tx<{ status: 'active' | 'completed' }[]>`select status from public.sessions where id = ${sessionId} for no key update`;
+  if (!s) throw new NotFoundError();
+  if (s.status === 'completed') throw new SessionReadOnlyError();
+}
+
 async function writing<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -132,6 +144,7 @@ export async function extractRequirementsFor(userId: string, input: { sessionId:
   const trimmed = result.trimmed.length > 0;
   return writing(() =>
     withUser(userId, async (tx) => {
+      await lockActiveSession(tx, sessionId);
       // Serializes concurrent runs for the same README (each replaces the other's proposed rows).
       const [locked] = await tx`select id from public.readmes where id = ${readmeId} and session_id = ${sessionId} for update`;
       if (!locked) throw new NotFoundError('README');
@@ -250,6 +263,7 @@ export async function assessCoverageFor(userId: string, input: { sessionId: stri
   const trimmed = result.trimmed.length > 0;
   return writing(() =>
     withUser(userId, async (tx) => {
+      await lockActiveSession(tx, sessionId);
       const payload = [...updates].map(([id, u]) => ({ id, ...u }));
       const assessed = payload.length
         ? await tx`
@@ -295,11 +309,12 @@ export async function updateRequirementNotesFor(userId: string, input: { require
   if (!UUID_RE.test(requirementId)) throw new NotFoundError('Requirement');
   return writing(() =>
     withUser(userId, async (tx) => {
-      const [r] = await tx<{ session_id: string; status: 'active' | 'completed' }[]>`
-        select r.session_id, s.status from public.requirements r join public.sessions s on s.id = r.session_id
-        where r.id = ${requirementId}`;
+      const [owner] = await tx<{ session_id: string }[]>`select session_id from public.requirements where id = ${requirementId}`;
+      if (!owner) throw new NotFoundError('Requirement');
+      await lockActiveSession(tx, owner.session_id);
+      const [r] = await tx<{ session_id: string }[]>`
+        select session_id from public.requirements where id = ${requirementId} for update`;
       if (!r) throw new NotFoundError('Requirement');
-      if (r.status === 'completed') throw new SessionReadOnlyError();
       const [row] = await tx<{ notes: string | null }[]>`
         update public.requirements set notes = ${clean || null} where id = ${requirementId} returning notes`;
       await logActivity(tx, {
@@ -324,12 +339,12 @@ export async function markRequirementReviewedFor(userId: string, input: { requir
   if (!UUID_RE.test(requirementId)) throw new NotFoundError('Requirement');
   return writing(() =>
     withUser(userId, async (tx) => {
-      const [r] = await tx<{ session_id: string; status: 'active' | 'completed'; disruptive: boolean; reviewed_at: Date | null }[]>`
-        select r.session_id, s.status, r.disruptive, r.reviewed_at
-        from public.requirements r join public.sessions s on s.id = r.session_id
-        where r.id = ${requirementId} for update of r`;
+      const [owner] = await tx<{ session_id: string }[]>`select session_id from public.requirements where id = ${requirementId}`;
+      if (!owner) throw new NotFoundError('Requirement');
+      await lockActiveSession(tx, owner.session_id);
+      const [r] = await tx<{ session_id: string; disruptive: boolean; reviewed_at: Date | null }[]>`
+        select session_id, disruptive, reviewed_at from public.requirements where id = ${requirementId} for update`;
       if (!r) throw new NotFoundError('Requirement');
-      if (r.status === 'completed') throw new SessionReadOnlyError();
       if (!r.disruptive) throw new RequirementsInputError('Only potentially disruptive requirements need a review.');
       if (r.reviewed_at) return { reviewedAt: r.reviewed_at };
       const [row] = await tx<{ reviewed_at: Date }[]>`
