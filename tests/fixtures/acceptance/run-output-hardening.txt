@@ -1,0 +1,5 @@
+PS C:\Users\alice\Desktop> .\universal-hardening.ps1
+Guest account disabled.
+Remote Desktop connections denied.
+Removed unauthorized administrator: eve
+Baseline hardening complete

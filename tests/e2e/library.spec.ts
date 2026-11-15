@@ -1,15 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import { signIn } from './support/helpers';
 
 const FIXTURES = path.join(import.meta.dirname, '..', 'fixtures');
-
-async function signIn(page: Page) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(`e2e-${randomUUID()}@example.test`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
 
 async function createScript(page: Page, s: { name: string; filename: string; content?: string; description?: string }) {
   await page.getByRole('button', { name: 'Create script' }).first().click();

@@ -1,59 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
-import { AnthropicMockClient, E2E_ANTHROPIC_MOCK_PORT } from '../support/anthropic-mock';
-
-const mock = new AnthropicMockClient(`http://127.0.0.1:${E2E_ANTHROPIC_MOCK_PORT}`);
-
-async function signIn(page: Page) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(`e2e-${randomUUID()}@example.test`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
-
-async function createLibraryScript(page: Page, name: string, content: string) {
-  await page.goto('/app/library');
-  await page.getByRole('button', { name: 'Create script' }).first().click();
-  const dialog = page.getByRole('dialog', { name: 'Create script' });
-  await dialog.getByLabel('Filename').fill('guest.ps1');
-  await dialog.getByLabel('Name', { exact: true }).fill(name);
-  await dialog.getByLabel('Content').fill(content);
-  await dialog.getByRole('button', { name: 'Create script' }).click();
-  await expect(dialog).toBeHidden();
-}
-
-async function newSession(page: Page, title: string) {
-  await page.goto('/app');
-  await page.getByRole('button', { name: 'New session' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New session' });
-  await dialog.getByLabel('Title').fill(title);
-  await dialog.getByRole('button', { name: 'Create session' }).click();
-  await expect(page).toHaveURL(/\/app\/sessions\/[0-9a-f-]{36}$/);
-}
-
-const inspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector' });
-
-async function showInspector(page: Page) {
-  const show = page.getByRole('button', { name: 'Show inspector' });
-  if (await show.isVisible()) await show.click();
-  await expect(inspector(page)).toBeVisible();
-}
-
-async function pasteReadme(page: Page, text: string) {
-  await showInspector(page);
-  await inspector(page).getByRole('button', { name: 'Add README' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add README' });
-  await dialog.getByRole('tab', { name: 'Paste' }).click();
-  await dialog.getByLabel('README text').fill(text);
-  await dialog.getByRole('button', { name: 'Add README' }).click();
-  await expect(dialog).toBeHidden();
-}
-
-const paragraphIds = (text: string) =>
-  text.split('\n\n').map((p, i) => `p-${i}-${createHash('sha256').update(p.trim()).digest('hex').slice(0, 8)}`);
-
-const panel = (page: Page) => page.getByRole('tabpanel');
+import { expect, test } from '@playwright/test';
+import { createLibraryScript, inspector, mock, newSession, panel, paragraphIds, pasteReadme, showInspector, signIn } from './support/helpers';
 
 test('assess → propose adaptation → diff tab → Accept gated on every flag → accept → session version downloadable, library script unchanged', async ({ page }) => {
   await signIn(page);

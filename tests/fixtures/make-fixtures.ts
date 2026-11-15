@@ -44,6 +44,28 @@ out(
 );
 out('sample.exe', Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00]));
 
+// --- acceptance fixtures (tests/e2e/acceptance.spec.ts): the universal script as a Windows editor saves it, UTF-8 BOM + CRLF ---
+mkdirSync(join(dir, 'acceptance'), { recursive: true });
+writeFileSync(
+  join(dir, 'acceptance', 'universal-hardening.ps1'),
+  Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(
+      [
+        '# Universal Windows hardening baseline',
+        "Write-Host 'Starting baseline hardening'",
+        "Disable-LocalUser -Name 'Guest'",
+        "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 1",
+        "Stop-Service -Name 'Spooler' -Force",
+        "Set-Service -Name 'Spooler' -StartupType Disabled",
+        "Write-Host 'Baseline hardening complete'",
+        '',
+      ].join('\r\n'),
+      'utf8',
+    ),
+  ]),
+);
+
 // --- PDFs ---
 function fixedMeta(doc: PDFDocument) {
   const d = new Date('2026-01-01T00:00:00Z');

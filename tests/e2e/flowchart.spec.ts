@@ -1,37 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import postgres from 'postgres';
 import { testDatabaseUrl } from '../db/env';
+import { inspector, newSession, node, openFlowchart, signIn } from './support/helpers';
 
 const sql = postgres(testDatabaseUrl(), { max: 2, onnotice: () => {} });
 test.afterAll(async () => {
   await sql.end();
 });
-
-async function signIn(page: Page, email: string) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(email);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
-
-async function newSession(page: Page, title: string): Promise<string> {
-  await page.goto('/app');
-  await page.getByRole('button', { name: 'New session' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New session' });
-  await dialog.getByLabel('Title').fill(title);
-  await dialog.getByRole('button', { name: 'Create session' }).click();
-  await expect(page).toHaveURL(/\/app\/sessions\/[0-9a-f-]{36}$/);
-  return page.url().split('/').pop()!;
-}
-
-const inspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector' });
-const node = (page: Page, label: string) => page.getByRole('button', { name: new RegExp(`^${label},`) });
-
-async function openFlowchart(page: Page) {
-  await page.getByRole('tab', { name: 'Flowchart' }).click();
-  await expect(page.getByTestId('flow-canvas')).toBeVisible();
-}
 
 test('"Send LEADS report to Claude" opens Claude tab with the latest report selected', async ({ page }) => {
   const email = `e2e-${randomUUID()}@example.test`;

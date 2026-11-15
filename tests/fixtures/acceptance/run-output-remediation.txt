@@ -1,0 +1,4 @@
+PS C:\Users\alice\Desktop> .\remediation-cycle-1.ps1
+Password expiry enabled for bob.
+Logon failure auditing enabled.
+Remediation complete

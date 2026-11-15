@@ -1,0 +1,65 @@
+name: Nightly acceptance (real Claude)
+
+# The v1.0 acceptance walk (spec 13.1, tests/e2e/acceptance.spec.ts) against the REAL Claude API.
+# The pull-request job (ci.yml) runs the same spec against the local mock; this one proves the
+# prompts, tool schemas and validation still work with the live model. It asserts structure, not
+# exact wording (docs/testing.md). Costs a few thousand tokens per run: see playwright.config.ts.
+
+on:
+  schedule:
+    - cron: '23 4 * * *' # every night, 04:23 UTC
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Claude model to run against (empty: the app's default)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: armadillo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Not the local default, so tests/db/globalSetup.ts uses this service instead of scripts/test-db.sh.
+      DATABASE_URL: postgres://postgres@127.0.0.1:5432/armadillo_test
+      ACCEPTANCE_REAL_CLAUDE: '1'
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ACCEPTANCE_CLAUDE_MODEL: ${{ inputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      # One attempt: a retry would spend the budget twice. The spec fails fast and clearly without the secret.
+      - run: pnpm exec playwright test tests/e2e/acceptance.spec.ts --retries=0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nightly-acceptance-report
+          path: |
+            playwright-report/
+            test-results/

@@ -1,12 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { expect, test, type Page } from '@playwright/test';
-
-async function signIn(page: Page) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(`e2e-${randomUUID()}@example.test`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
+import { expect, test } from '@playwright/test';
+import { signIn } from './support/helpers';
 
 test('fresh account shows empty state, no sample activity', async ({ page }) => {
   await signIn(page);

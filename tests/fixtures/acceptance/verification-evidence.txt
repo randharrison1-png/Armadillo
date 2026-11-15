@@ -1,0 +1,4 @@
+Scoreboard check, Harbor Clinic front-desk image (HC-FRONTDESK-0417)
+Captured after the remediation script was run and LEADS was repeated.
+Points shown: 100 out of 100
+Findings still failing: none

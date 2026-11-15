@@ -1,36 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
-import { AnthropicMockClient, E2E_ANTHROPIC_MOCK_PORT } from '../support/anthropic-mock';
+import { mock, newSession, panel, pasteReadme, signIn } from './support/helpers';
 
-const mock = new AnthropicMockClient(`http://127.0.0.1:${E2E_ANTHROPIC_MOCK_PORT}`);
-
-async function signIn(page: Page) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(`e2e-${randomUUID()}@example.test`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
-
-async function newSession(page: Page, title: string) {
-  await page.getByRole('button', { name: 'New session' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New session' });
-  await dialog.getByLabel('Title').fill(title);
-  await dialog.getByRole('button', { name: 'Create session' }).click();
-  await expect(page).toHaveURL(/\/app\/sessions\/[0-9a-f-]{36}$/);
-}
-
-async function pasteReadme(page: Page, text: string) {
-  const show = page.getByRole('button', { name: 'Show inspector' });
-  if (await show.isVisible()) await show.click();
-  await page.getByRole('complementary', { name: 'Inspector' }).getByRole('button', { name: 'Add README' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add README' });
-  await dialog.getByRole('tab', { name: 'Paste' }).click();
-  await dialog.getByLabel('README text').fill(text);
-  await dialog.getByRole('button', { name: 'Add README' }).click();
-  await expect(dialog).toBeHidden();
-}
-
-const panel = (page: Page) => page.getByRole('tabpanel');
 const conversation = (page: Page) => panel(page).getByRole('list', { name: 'Conversation' });
 
 async function openClaude(page: Page) {

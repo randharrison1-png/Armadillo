@@ -1,25 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import { newSession, node, signIn } from './support/helpers';
 
 const FIXTURES = path.join(import.meta.dirname, '..', 'fixtures', 'leads');
-
-async function signIn(page: Page) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(`e2e-${randomUUID()}@example.test`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
-
-async function newSession(page: Page, title: string) {
-  await page.getByRole('button', { name: 'New session' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New session' });
-  await dialog.getByLabel('Title').fill(title);
-  await dialog.getByRole('button', { name: 'Create session' }).click();
-  await expect(page).toHaveURL(/\/app\/sessions\/[0-9a-f-]{36}$/);
-}
-
-const node = (page: Page, label: string) => page.getByRole('button', { name: new RegExp(`^${label},`) });
 
 /** Flowchart -> Run LEADS -> "Open LEADS reports". */
 async function openReports(page: Page) {

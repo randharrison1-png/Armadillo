@@ -3,43 +3,12 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import postgres from 'postgres';
 import { testDatabaseUrl } from '../db/env';
+import { inspector, newSession, node, openFlowchart, panel, showInspector, signIn } from './support/helpers';
 
 const sql = postgres(testDatabaseUrl(), { max: 2, onnotice: () => {} });
 test.afterAll(async () => {
   await sql.end();
 });
-
-async function signIn(page: Page, email: string) {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(email);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app$/);
-}
-
-async function newSession(page: Page, title: string): Promise<string> {
-  await page.goto('/app');
-  await page.getByRole('button', { name: 'New session' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New session' });
-  await dialog.getByLabel('Title').fill(title);
-  await dialog.getByRole('button', { name: 'Create session' }).click();
-  await expect(page).toHaveURL(/\/app\/sessions\/[0-9a-f-]{36}$/);
-  return page.url().split('/').pop()!;
-}
-
-const inspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector' });
-const panel = (page: Page) => page.getByRole('tabpanel');
-const node = (page: Page, label: string) => page.getByRole('button', { name: new RegExp(`^${label},`) });
-
-async function showInspector(page: Page) {
-  const show = page.getByRole('button', { name: 'Show inspector' });
-  if (await show.isVisible()) await show.click();
-  await expect(inspector(page)).toBeVisible();
-}
-
-async function openFlowchart(page: Page) {
-  await page.getByRole('tab', { name: 'Flowchart' }).click();
-  await expect(page.getByTestId('flow-canvas')).toBeVisible();
-}
 
 /** A session script with v1 and v2, a README, and requirements bound to v2 (two plain, one disruptive and unreviewed). */
 async function seedScript(email: string, sessionId: string) {
