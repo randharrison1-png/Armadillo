@@ -97,7 +97,9 @@ test('raw endpoint: text/plain, nosniff, cache and robots headers, download file
   expect(r.headers()['content-type']).toBe('text/plain; charset=utf-8');
   expect(r.headers()['x-content-type-options']).toBe('nosniff');
   expect(r.headers()['content-disposition']).toBe('inline');
-  expect(r.headers()['cache-control']).toBe('public, max-age=60');
+  expect(r.headers()['cache-control']).toBe('no-cache');
+  expect(r.headers()['etag']).toMatch(/^"[A-Za-z0-9_-]+"$/);
+  expect((await request.get(`/p/${pub}/raw`, { headers: { 'if-none-match': r.headers()['etag'] } })).status()).toBe(304);
   expect(r.headers()['x-robots-tag']).toBeUndefined();
   expect(await r.text()).toBe(html);
 

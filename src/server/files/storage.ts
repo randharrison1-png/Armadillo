@@ -212,10 +212,24 @@ export function serviceClient(): SupabaseClient {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-/** LocalFileStore when LOCAL_FILE_STORE_DIR is set (dev/test), otherwise Supabase Storage. */
+/**
+ * LocalFileStore when LOCAL_FILE_STORE_DIR is set (dev/test only), otherwise Supabase Storage. On
+ * Vercel the local store is refused (its disk is ephemeral and per instance, and it would also enable
+ * the local upload route): a copied .env with LOCAL_FILE_STORE_DIR set must fail loudly, not silently.
+ */
 export function getFileStore(): FileStore {
-  const dir = process.env.LOCAL_FILE_STORE_DIR;
+  const dir = localStoreDir();
   return dir ? new LocalFileStore(dir) : new SupabaseFileStore();
+}
+
+/** LOCAL_FILE_STORE_DIR (trimmed) or null; throws on Vercel (see getFileStore). The one place that reads it. */
+export function localStoreDir(env: Record<string, string | undefined> = process.env): string | null {
+  const dir = env.LOCAL_FILE_STORE_DIR?.trim();
+  if (!dir) return null;
+  if (env.VERCEL !== undefined) {
+    throw new Error('LOCAL_FILE_STORE_DIR is set on Vercel. The local file store is for local development and tests only: unset it so Supabase Storage is used.');
+  }
+  return dir;
 }
 
 /** Keeps a safe basename: no directories, `[A-Za-z0-9._-]` only, <= 100 chars, never empty. */
@@ -305,7 +319,7 @@ export async function createUploadTarget(scope: UploadScope, filename: string, s
   const user = await requireUser();
   validateUpload(filename, size, scope.kind);
   const storagePath = buildStoragePath(user.id, scope.sessionId, filename);
-  if (process.env.LOCAL_FILE_STORE_DIR) return { kind: 'local', url: LOCAL_UPLOAD_URL, storagePath };
+  if (localStoreDir()) return { kind: 'local', url: LOCAL_UPLOAD_URL, storagePath };
   const { data, error } = await serviceClient().storage.from(PRIVATE_BUCKET).createSignedUploadUrl(storagePath);
   if (error || !data) throw new Error(`Could not create upload URL: ${error?.message ?? 'unknown error'}`);
   return { kind: 'supabase-signed', signedUrl: data.signedUrl, token: data.token, storagePath };

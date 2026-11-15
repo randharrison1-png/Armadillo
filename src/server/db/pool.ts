@@ -18,7 +18,7 @@ export function getPool(): Sql {
     if (!url) throw new Error('DATABASE_URL is not set');
     globalForPool.__armadilloPool = postgres(url, {
       prepare: false,
-      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+      max: Number(process.env.DATABASE_POOL_MAX?.trim() || 5),
       idle_timeout: 20,
       onnotice: () => {},
     });

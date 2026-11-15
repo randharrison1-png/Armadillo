@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getCurrentUser } from '@/server/auth';
-import { FileTooLargeError, MAX_PDF_BYTES, UnsupportedFileTypeError, uploadPrivate, type UploadKind } from '@/server/files/storage';
+import { FileTooLargeError, localStoreDir, MAX_PDF_BYTES, UnsupportedFileTypeError, uploadPrivate, type UploadKind } from '@/server/files/storage';
 
 /**
  * Local (dev/test) upload path: multipart POST { file, kind, sessionId? } -> { storagePath }.
@@ -10,7 +10,7 @@ import { FileTooLargeError, MAX_PDF_BYTES, UnsupportedFileTypeError, uploadPriva
 const KINDS: readonly UploadKind[] = ['readme', 'script', 'report', 'evidence'];
 
 export async function POST(request: NextRequest) {
-  if (!process.env.LOCAL_FILE_STORE_DIR) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!localStoreDir()) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   if (!(await getCurrentUser())) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const declared = Number(request.headers.get('content-length') ?? 0);

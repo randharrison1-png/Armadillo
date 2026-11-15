@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { startAnthropicMock, type AnthropicMock } from '../support/anthropic-mock';
-import { ClaudeUpstreamError, runToolCall, StructuredOutputError } from '@/server/claude/client';
+import { ClaudeUpstreamError, runToolCall, StructuredOutputError, toolMaxTokens } from '@/server/claude/client';
 
 let mock: AnthropicMock;
 
@@ -108,5 +108,20 @@ describe('runToolCall (structured output)', () => {
     expect(err).toBeInstanceOf(ClaudeUpstreamError);
     expect((err as ClaudeUpstreamError).code).toBe('overloaded');
     expect(bodies()).toHaveLength(1);
+  });
+});
+
+describe('toolMaxTokens', () => {
+  it('a blank CLAUDE_TOOL_MAX_TOKENS (copied from .env.example) means the default', () => {
+    const prev = process.env.CLAUDE_TOOL_MAX_TOKENS;
+    try {
+      process.env.CLAUDE_TOOL_MAX_TOKENS = '';
+      expect(toolMaxTokens()).toBe(16_000);
+      process.env.CLAUDE_TOOL_MAX_TOKENS = '4096';
+      expect(toolMaxTokens()).toBe(4096);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_TOOL_MAX_TOKENS;
+      else process.env.CLAUDE_TOOL_MAX_TOKENS = prev;
+    }
   });
 });

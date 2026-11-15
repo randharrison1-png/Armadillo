@@ -51,7 +51,9 @@ export function resolveModel(profileModel: string | null | undefined, env: Recor
 }
 
 const numberEnv = (name: string, fallback: number) => {
-  const n = Number(process.env[name]);
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback; // unset or blank (e.g. an empty line copied from .env.example)
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
