@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import postgres from 'postgres';
 import { testDatabaseUrl } from '../db/env';
-import { inspector, newSession, node, openFlowchart, panel, showInspector, signIn } from './support/helpers';
+import { forensicPanel, inspector, newSession, node, openFlowchart, panel, showInspector, signIn } from './support/helpers';
 
 const sql = postgres(testDatabaseUrl(), { max: 2, onnotice: () => {} });
 test.afterAll(async () => {
@@ -101,12 +101,16 @@ test('submit is blocked while forensic questions are open unless an override not
   await openFlowchart(page);
   await node(page, 'Forensic questions').click();
   await showInspector(page);
-  const forensic = inspector(page).getByRole('region', { name: 'Forensic questions' }).first();
+  const forensic = forensicPanel(page);
   await expect(forensic.getByTestId('forensic-count')).toHaveText('No questions yet');
-  for (const q of ['Who created the hidden admin account?', 'Which service listens on port 4444?']) {
+  const added = ['Who created the hidden admin account?', 'Which service listens on port 4444?'];
+  for (const [i, q] of added.entries()) {
     await forensic.getByLabel('New question').fill(q);
     await forensic.getByRole('button', { name: 'Add question' }).click();
-    await expect(forensic.getByText(q)).toBeVisible();
+    // Wait on the list item and the count, not getByText (the textarea's own value would match).
+    await expect(forensic.getByRole('listitem').filter({ hasText: q })).toBeVisible();
+    await expect(forensic.getByTestId('forensic-count')).toHaveText(`0 of ${i + 1} answered`);
+    await expect(forensic.getByLabel('New question')).toHaveValue('');
   }
   await expect(forensic.getByTestId('forensic-count')).toHaveText('0 of 2 answered');
   await forensic.getByRole('button', { name: 'Answer question 1' }).click();
@@ -117,6 +121,8 @@ test('submit is blocked while forensic questions are open unless an override not
   await forensic.getByRole('button', { name: 'Edit answer to question 1' }).click();
   await forensic.getByLabel('Answer to question 1').fill('The user svc_backup2');
   await forensic.getByRole('button', { name: 'Save answer' }).click();
+  // The answer textarea mirrors its value as text: wait for it to close before matching the text.
+  await expect(forensic.getByLabel('Answer to question 1', { exact: true })).toBeHidden();
   await expect(forensic.getByText('The user svc_backup2')).toBeVisible();
   await forensic.getByRole('button', { name: 'Reopen question 1' }).click();
   await expect(forensic.getByTestId('forensic-count')).toHaveText('0 of 2 answered');

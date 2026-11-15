@@ -14,7 +14,7 @@ import {
   REMEDIATION_SCRIPT,
   REMEDIATION_SUMMARY,
 } from './claude-mock';
-import { inspector, newSession, node, openFlowchart, panel, paragraphIds, pasteReadme, showInspector, signIn } from './support/helpers';
+import { forensicPanel, inspector, newSession, node, openFlowchart, panel, paragraphIds, pasteReadme, showInspector, signIn } from './support/helpers';
 
 /**
  * Spec 13.1, the minimum end-to-end acceptance test, as ONE walk through all eleven steps. At every
@@ -512,7 +512,7 @@ test('v1.0 acceptance: spec 13.1, all eleven steps', async ({ page, browser, bas
       // Forensic questions run alongside hardening; this one is answered, so submitting needs no override.
       await node(page, 'Forensic questions').click();
       await showInspector(page);
-      const forensic = inspector(page).getByRole('region', { name: 'Forensic questions' }).first();
+      const forensic = forensicPanel(page);
       await forensic.getByLabel('New question').fill(forensicQuestion);
       await forensic.getByRole('button', { name: 'Add question' }).click();
       await expect(forensic.getByTestId('forensic-count')).toHaveText('0 of 1 answered');
@@ -647,7 +647,7 @@ test('v1.0 acceptance: spec 13.1, all eleven steps', async ({ page, browser, bas
         await expect(inspector(page).getByLabel('Notes'), `notes of ${label}`).toHaveValue(note);
       }
       await node(page, 'Forensic questions').click();
-      const forensic = inspector(page).getByRole('region', { name: 'Forensic questions' }).first();
+      const forensic = forensicPanel(page);
       await expect(forensic.getByTestId('forensic-count')).toHaveText('1 of 1 answered');
       await expect(forensic.getByText(forensicQuestion)).toBeVisible();
       await expect(forensic.getByText(forensicAnswer)).toBeVisible();

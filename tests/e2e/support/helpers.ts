@@ -35,6 +35,16 @@ export const panel = (page: Page): Locator => page.getByRole('tabpanel');
 /** A flowchart node button by its label (its accessible name is "<label>, <status>"). */
 export const node = (page: Page, label: string): Locator => page.getByRole('button', { name: new RegExp(`^${label},`) });
 
+/**
+ * The Forensic questions panel of the selected flowchart node. Two ForensicPanels are mounted (the
+ * node's "Step: Forensic questions" section and the session page's own "Forensic questions"
+ * section), so this scopes to the node section's inner panel and is never ambiguous.
+ */
+export const forensicPanel = (page: Page): Locator =>
+  inspector(page)
+    .getByRole('region', { name: 'Step: Forensic questions', exact: true })
+    .getByRole('region', { name: 'Forensic questions', exact: true });
+
 export async function showInspector(page: Page) {
   const show = page.getByRole('button', { name: 'Show inspector' });
   if (await show.isVisible()) await show.click();

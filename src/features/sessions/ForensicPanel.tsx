@@ -62,12 +62,15 @@ function AddQuestion({ sessionId, onAdded }: { sessionId: string; onAdded: () =>
   const [error, setError] = useState<string | null>(null);
 
   const add = async () => {
+    // The box stays editable while the add is in flight: clear it only if the user has not
+    // started typing the next question meanwhile.
+    const sent = prompt;
     setPending(true);
     setError(null);
     try {
-      const r = await addForensicQuestionAction({ sessionId, prompt });
+      const r = await addForensicQuestionAction({ sessionId, prompt: sent });
       if (!r.ok) return setError(r.error);
-      setPrompt('');
+      setPrompt((p) => (p === sent ? '' : p));
       onAdded();
     } catch {
       setError('Could not add the question. Try again.');
