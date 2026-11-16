@@ -1,0 +1,34 @@
+[
+  {
+    "filename": "Harden-Windows.ps1",
+    "name": "Universal hardening (Windows)",
+    "category": "windows",
+    "function": "universal_hardening",
+    "os_compat": ["windows", "windows_server"],
+    "description": "Hardens Windows 10/11 and Windows Server images from the README of the image: accounts, password and lockout policy, security options, RDP, firewall, Defender, updates, services, shares, IIS, software and prohibited files. Run with -AuditOnly first."
+  },
+  {
+    "filename": "harden-linux.sh",
+    "name": "Universal hardening (Linux)",
+    "category": "linux",
+    "function": "universal_hardening",
+    "os_compat": ["linux"],
+    "description": "Hardens Debian, Ubuntu and Mint images from the README of the image: accounts, sudo, PAM password and lockout policy, SSH, UFW, sysctl, services, packages, updates, display manager, permissions and prohibited files. Run with --audit first."
+  },
+  {
+    "filename": "Leads.ps1",
+    "name": "LEADS finder (Windows)",
+    "category": "leads_audit",
+    "function": "leads_audit",
+    "os_compat": ["windows", "windows_server"],
+    "description": "Run after hardening when points are still missing. Ranks the most likely unscored checks on Windows images with the reason and the fix, makes a few safe repairs and writes a report to C:\\HardeningLogs."
+  },
+  {
+    "filename": "leads.sh",
+    "name": "LEADS finder (Linux)",
+    "category": "leads_audit",
+    "function": "leads_audit",
+    "os_compat": ["linux"],
+    "description": "Run after hardening when points are still missing. Ranks the most likely unscored checks on Linux images with the reason and the fix, makes a few safe repairs and writes a report to /var/log/hardening."
+  }
+]

@@ -84,6 +84,15 @@ done
       throwaway Postgres. Automating it needs deploy secrets and is a follow-up.
 - [ ] Check: `psql "$DIRECT_URL" -c '\dt public.*' -c '\dt paste.*'` lists the tables, and
       `select proname from pg_proc where proname = 'check_rate_limit'` returns one row.
+- [ ] Load the shared starter library (migration 0007): the universal hardening and LEADS scripts in
+      `supabase/seed/library/` (listed in its `manifest.json`, stored byte for byte). Every account
+      gets its own copy: new accounts automatically when their profile is created, existing accounts
+      when the loader runs. Running it again is safe (seeds are upserted by filename; an account that
+      already has a library script with that filename is skipped).
+
+```bash
+DATABASE_URL="$DIRECT_URL" pnpm tsx scripts/load-library-seed.ts
+```
 
 ## 4. Storage
 
