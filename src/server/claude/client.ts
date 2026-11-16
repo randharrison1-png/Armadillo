@@ -273,6 +273,16 @@ function replayBlocks(message: Anthropic.Message): Anthropic.ContentBlockParam[]
   return out.length ? out : [{ type: 'text', text: '(no answer)' }];
 }
 
+/** Models that answered "tool_choice type tool/any is not supported" (remembered per server instance). */
+const noForcedToolChoice = new Set<string>();
+
+/** True for the API's 400 refusing a forced `tool_choice` (some models only accept auto/none). */
+export function isForcedToolChoiceUnsupported(e: unknown): boolean {
+  const status = (e as { status?: unknown })?.status;
+  const message = `${(e as { message?: unknown })?.message ?? ''}`;
+  return status === 400 && /tool_choice/i.test(message) && /not supported/i.test(message);
+}
+
 /**
  * One forced tool call (no streaming, no database): `tool_choice` names the tool, the input is
  * validated with `schema`; on invalid input (or no tool call) it retries ONCE, replaying Claude's
@@ -280,6 +290,11 @@ function replayBlocks(message: Anthropic.Message): Anthropic.ContentBlockParam[]
  * StructuredOutputError. An answer cut off at max_tokens is NOT retried (the same budget would cut it
  * off again, doubling time and cost): StructuredOutputError code 'output_truncated' at once.
  * Upstream failures throw ClaudeUpstreamError (scrubbed) and are not retried here.
+ *
+ * Models that refuse a forced `tool_choice` (HTTP 400 "tool_choice ... not supported") are asked
+ * again with `tool_choice: auto`, only that one tool offered, and an explicit instruction to answer
+ * by calling it; the answer goes through the same validation and retry. The refusal is remembered
+ * for the model, so later calls go straight to auto. That re-ask does not count as an attempt.
  */
 export async function runToolCall<T>(p: {
   apiKey: string;
@@ -295,17 +310,35 @@ export async function runToolCall<T>(p: {
   const usage: Usage = { input_tokens: 0, output_tokens: 0 };
   let model = p.model;
   let issues = '';
+  const mustCall: { type: 'text'; text: string } = {
+    type: 'text',
+    text: `Answer only by calling the ${p.tool.name} tool exactly once, with complete input. Do not answer in text.`,
+  };
+  const switchToAutoToolChoice = () => {
+    const first = messages[0]!;
+    if (Array.isArray(first.content) && !first.content.includes(mustCall)) first.content = [...first.content, mustCall];
+  };
+  if (noForcedToolChoice.has(p.model)) switchToAutoToolChoice();
   for (let attempt = 1; attempt <= 2; attempt++) {
     let message: Anthropic.Message;
-    try {
-      message = await client.messages.create({
+    const request = () =>
+      client.messages.create({
         model: p.model,
         max_tokens: p.maxTokens,
         system: p.system,
         messages,
         tools: [{ name: p.tool.name, description: p.tool.description, input_schema: { type: 'object', ...p.tool.input_schema } }],
-        tool_choice: { type: 'tool', name: p.tool.name },
+        tool_choice: noForcedToolChoice.has(p.model) ? { type: 'auto' } : { type: 'tool', name: p.tool.name },
       });
+    try {
+      try {
+        message = await request();
+      } catch (e) {
+        if (noForcedToolChoice.has(p.model) || !isForcedToolChoiceUnsupported(e)) throw e;
+        noForcedToolChoice.add(p.model);
+        switchToAutoToolChoice();
+        message = await request();
+      }
     } catch (e) {
       throw toUpstreamError(e, [p.apiKey]);
     }

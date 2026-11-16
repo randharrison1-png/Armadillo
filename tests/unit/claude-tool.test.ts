@@ -102,6 +102,35 @@ describe('runToolCall (structured output)', () => {
     expect(bodies()).toHaveLength(1);
   });
 
+  it('a model that refuses a forced tool_choice is asked again with auto and an instruction, and is remembered', async () => {
+    const refusal = { fail: { status: 400, type: 'invalid_request_error', message: 'tool_choice: type "tool" and "any" are not supported for this model.' } };
+    mock.enqueue(refusal, { toolUse: { input: { things: [{ name: 'a' }] } } }, { toolUse: { input: { things: [{ name: 'b' }] } } });
+    const call2 = (model: string) => runToolCall({
+      apiKey: 'sk-test-0000', model, system: 'system prompt', content: [{ type: 'text', text: 'List the things.' }], tool, schema, maxTokens: 1000,
+    });
+    const out = await call2('claude-no-forcing');
+    expect(out.data).toEqual({ things: [{ name: 'a' }] });
+    expect(out.attempts).toBe(1);
+    const reqs = bodies();
+    expect(reqs).toHaveLength(2);
+    expect(reqs[0].tool_choice).toEqual({ type: 'tool', name: 'record_things' });
+    expect(reqs[1].tool_choice).toEqual({ type: 'auto' });
+    expect(reqs[1].tools?.map((t) => t.name)).toEqual(['record_things']);
+    expect(JSON.stringify(reqs[1].messages[0].content)).toMatch(/calling the record_things tool/);
+    // the next call for that model goes straight to auto
+    const again = await call2('claude-no-forcing');
+    expect(again.data).toEqual({ things: [{ name: 'b' }] });
+    expect(bodies()).toHaveLength(3);
+    expect(bodies()[2].tool_choice).toEqual({ type: 'auto' });
+  });
+
+  it('other 400 errors are not mistaken for a tool_choice refusal', async () => {
+    mock.enqueue({ fail: { status: 400, type: 'invalid_request_error', message: 'max_tokens: too large' } });
+    const err = await call().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ClaudeUpstreamError);
+    expect(bodies()).toHaveLength(1);
+  });
+
   it('upstream failures are ClaudeUpstreamError and are not retried as validation errors', async () => {
     mock.enqueue({ fail: { status: 529 } });
     const err = await call().catch((e: unknown) => e);
