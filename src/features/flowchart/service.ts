@@ -1,0 +1,146 @@
+import 'server-only';
+import { z } from 'zod';
+import { logActivity } from '@/server/activity';
+import { withUser, type Tx } from '@/server/db/withUser';
+import type { StepKey, StepStatus, WorkflowStep } from '@/lib/types';
+import { decisionAvailability, remediationTitle, type CycleOutcome } from '@/features/reports/remediationRules';
+import { notRemediationScript } from '@/features/reports/sessionScripts';
+import { storedFilename } from '@/features/sessions/completeRules';
+import { STEP_ORDER } from './stepMeta';
+import { setStepStatusTx } from './steps';
+import { FlowchartError, NOTE_MAX, READ_ONLY_MESSAGE, type FlowchartData } from './types';
+
+export { FlowchartError };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const stepKey = z.enum(STEP_ORDER as [StepKey, ...StepKey[]]);
+const statusSchema = z.enum(['not_started', 'in_progress', 'verified', 'blocked']);
+const statusInput = z.object({ sessionId: z.string().regex(UUID_RE), step: stepKey, status: statusSchema, note: z.string().max(NOTE_MAX).optional() });
+const notesInput = z.object({ sessionId: z.string().regex(UUID_RE), step: stepKey, notes: z.string().max(NOTE_MAX) });
+
+export type ChangeStatusInput = { sessionId: string; step: StepKey; status: StepStatus; note?: string };
+
+async function openSession(tx: Tx, sessionId: string): Promise<{ current_cycle: number }> {
+  const [s] = await tx<{ status: string; current_cycle: number }[]>`select status, current_cycle from public.sessions where id = ${sessionId} for no key update`;
+  if (!s) throw new FlowchartError('Session not found');
+  if (s.status === 'completed') throw new FlowchartError(READ_ONLY_MESSAGE);
+  return s;
+}
+
+/** Validated, read-only-aware status change with the evidence guard for Complete and Verified. */
+export function changeStepStatusFor(userId: string, input: ChangeStatusInput): Promise<WorkflowStep> {
+  const parsed = statusInput.safeParse(input);
+  if (!parsed.success) return Promise.reject(new FlowchartError('Invalid step or status'));
+  const data = parsed.data;
+  return withUser(userId, async (tx) => {
+    await openSession(tx, data.sessionId);
+    return setStepStatusTx(tx, data);
+  });
+}
+
+/** Saves a step's notes (no status event) and logs the edit. */
+export function updateStepNotesFor(userId: string, input: { sessionId: string; step: StepKey; notes: string }): Promise<WorkflowStep> {
+  const parsed = notesInput.safeParse(input);
+  if (!parsed.success) return Promise.reject(new FlowchartError(`Notes must be ${NOTE_MAX} characters or fewer`));
+  const data = parsed.data;
+  return withUser(userId, async (tx) => {
+    await openSession(tx, data.sessionId);
+    const [row] = await tx<WorkflowStep[]>`
+      update public.workflow_steps set notes = ${data.notes}
+      where session_id = ${data.sessionId} and step = ${data.step}::public.step_key returning *`;
+    if (!row) throw new FlowchartError('Workflow step not found');
+    await logActivity(tx, {
+      action: 'step.notes_updated',
+      entityType: 'workflow_step',
+      entityId: row.id,
+      sessionId: data.sessionId,
+      meta: { step: data.step, length: data.notes.length },
+    });
+    return row;
+  });
+}
+
+const iso = (d: Date) => d.toISOString();
+const num = (v: string | null | undefined) => (v === null || v === undefined ? null : Number(v));
+
+/** Everything the flowchart tab shows, or null when the session is not the user's. */
+export function getFlowchartDataFor(userId: string, sessionId: string): Promise<FlowchartData | null> {
+  if (!UUID_RE.test(sessionId)) return Promise.resolve(null);
+  return withUser(userId, async (tx) => {
+    const [session] = await tx<{ status: 'active' | 'completed'; current_cycle: number; completed_at: Date | null }[]>`
+      select status, current_cycle, completed_at from public.sessions where id = ${sessionId}`;
+    if (!session) return null;
+    const steps = await tx<{ step: StepKey; status: StepStatus; notes: string | null; updated_at: Date }[]>`
+      select step, status, notes, updated_at from public.workflow_steps where session_id = ${sessionId}`;
+    const evidence = await tx<{ id: string; step: StepKey; kind: string; note: string | null; created_at: Date; cycle_no: number; storage_path: string | null; script_name: string | null; version_no: number | null }[]>`
+      select e.id, e.step, e.kind, e.note, e.created_at, e.cycle_no, e.storage_path, s.name as script_name, v.version_no
+      from public.evidence e
+      left join public.script_versions v on v.id = e.script_version_id
+      left join public.scripts s on s.id = v.script_id
+      where e.session_id = ${sessionId} order by e.created_at desc, e.id desc`;
+    const versions = await tx<{ id: string; name: string; version_no: number }[]>`
+      select v.id, s.name, v.version_no from public.script_versions v join public.scripts s on s.id = v.script_id
+      where s.session_id = ${sessionId} and s.archived_at is null
+      order by s.created_at, s.id, v.version_no desc limit 100`;
+    const [forensic] = await tx<{ total: number; answered: number }[]>`
+      select count(*)::int as total, (count(*) filter (where status = 'answered'))::int as answered
+      from public.forensic_questions where session_id = ${sessionId}`;
+    const events = await tx<{ id: string; step: StepKey; from_status: StepStatus | null; to_status: StepStatus; cycle_no: number; note: string | null; created_at: Date }[]>`
+      select id, step, from_status, to_status, cycle_no, note, created_at from public.workflow_step_events
+      where session_id = ${sessionId} order by created_at desc, id desc limit 500`;
+    const [report] = await tx<{ id: string; filename: string; cycle_no: number }[]>`
+      select id, filename, cycle_no from public.leads_reports where session_id = ${sessionId} order by created_at desc, id desc limit 1`;
+    const [script] = await tx<{ id: string; filename: string }[]>`
+      select s.id, s.filename from public.scripts s
+      where s.session_id = ${sessionId} and s.function = 'session_generated' and s.archived_at is null and s.current_version_id is not null
+        and ${notRemediationScript(tx)}
+      order by s.updated_at desc, s.created_at desc, s.id limit 1`;
+    const [remediation] = await tx<{ id: string; status: 'pending' | 'accepted'; cycle_no: number | null; script_id: string | null; name: string | null; filename: string | null }[]>`
+      select p.id, p.status, p.cycle_no, s.id as script_id, s.name, s.filename
+      from public.proposals p
+      left join public.script_versions v on v.id = p.result_version_id
+      left join public.scripts s on s.id = v.script_id
+      where p.session_id = ${sessionId} and p.kind = 'remediation' and p.status <> 'rejected'
+      order by p.created_at desc, p.id desc limit 1`;
+    const cycleRows = await tx<{ cycle_no: number; outcome: CycleOutcome; filename: string | null; updated_at: Date; points: string | null; target_points: string | null }[]>`
+      select rc.cycle_no, rc.outcome, lr.filename, rc.updated_at, rc.points, rc.target_points from public.remediation_cycles rc
+      left join public.leads_reports lr on lr.id = rc.report_id
+      where rc.session_id = ${sessionId} order by rc.cycle_no`;
+    const [{ n: currentCycleReports }] = await tx<{ n: number }[]>`
+      select count(*)::int as n from public.leads_reports where session_id = ${sessionId} and cycle_no = ${session.current_cycle}`;
+    const checkPoints = steps.find((s) => s.step === 'check_points')?.status ?? 'not_started';
+    const currentRow = cycleRows.find((c) => c.cycle_no === session.current_cycle);
+    const outcome = currentRow?.outcome ?? null;
+    return {
+      sessionStatus: session.status,
+      completedAt: session.completed_at ? iso(session.completed_at) : null,
+      currentCycle: session.current_cycle,
+      forensic: { total: forensic.total, answered: forensic.answered },
+      points: { points: num(currentRow?.points), target: num(currentRow?.target_points) },
+      scriptVersions: versions.map((v) => ({ id: v.id, label: `${v.name} · v${v.version_no}` })),
+      steps: steps.map((s) => ({ step: s.step, status: s.status, notes: s.notes, updatedAt: iso(s.updated_at) })),
+      evidence: evidence.map((e) => ({
+        id: e.id,
+        step: e.step,
+        kind: e.kind,
+        note: e.note,
+        createdAt: iso(e.created_at),
+        cycleNo: e.cycle_no,
+        filename: storedFilename(e.storage_path),
+        scriptLabel: e.script_name && e.version_no ? `${e.script_name} · v${e.version_no}` : null,
+      })),
+      events: events.map((e) => ({ id: e.id, step: e.step, fromStatus: e.from_status, toStatus: e.to_status, cycleNo: e.cycle_no, note: e.note, createdAt: iso(e.created_at) })),
+      latestReport: report ? { id: report.id, filename: report.filename, cycleNo: report.cycle_no } : null,
+      latestSessionScript: script ? { scriptId: script.id, filename: script.filename } : null,
+      latestRemediation: remediation
+        ? {
+            proposalId: remediation.id,
+            title: remediation.name ?? remediationTitle(remediation.cycle_no ?? session.current_cycle),
+            status: remediation.status,
+            script: remediation.script_id && remediation.filename ? { scriptId: remediation.script_id, filename: remediation.filename } : null,
+          }
+        : null,
+      decision: decisionAvailability({ sessionStatus: session.status, checkPoints, currentCycle: session.current_cycle, currentCycleReports, outcome }),
+      cycles: cycleRows.map((c) => ({ cycleNo: c.cycle_no, outcome: c.outcome, reportFilename: c.filename, updatedAt: iso(c.updated_at), points: num(c.points), targetPoints: num(c.target_points) })),
+    };
+  });
+}

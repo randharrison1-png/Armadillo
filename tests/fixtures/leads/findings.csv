@@ -1,0 +1,4 @@
+Check,Status,Severity,Category
+Guest account disabled,Pass,Low,Accounts
+"Remote Desktop, enabled",Fail,High,Remote Access
+Audit policy,Unknown,Medium,Policy

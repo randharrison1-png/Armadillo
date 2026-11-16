@@ -1,0 +1,5 @@
+[
+  {"title": "Guest account disabled", "status": "pass", "severity": "low", "category": "Accounts"},
+  {"title": "Remote Desktop enabled", "status": "FAIL", "severity": "High", "category": "Remote Access"},
+  {"title": "Audit policy not configured", "result": "manual review", "severity": "medium"}
+]

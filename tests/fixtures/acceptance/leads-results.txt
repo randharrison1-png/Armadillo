@@ -1,0 +1,17 @@
+=== LEADS Compliance Scan ===
+Scan started 2026-11-14T09:30:00Z
+Host: HC-FRONTDESK-0417
+
+== Accounts ==
+PASS [low] Guest account disabled
+PASS [medium] Unauthorized administrators removed
+FAIL [high] Password never expires for local user bob
+
+== Services ==
+PASS [medium] Print Spooler is running
+PASS [medium] Remote Desktop service is disabled
+
+== Auditing ==
+FAIL [medium] Audit policy does not record logon failures
+
+Total: 62 out of 100
